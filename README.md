@@ -26,6 +26,14 @@
 python -m pip install pyminiwebview
 ```
 
+安装本地产物时，将包名替换为 wheel 路径：
+
+```bash
+python -m pip install dist\pyminiwebview-0.1.0-cp39-abi3-win_amd64.whl
+```
+
+也可以直接分发 pyd：将 `pyminiwebview.pyd` 或 `pyminiwebview.abi3.pyd` 放到应用脚本同目录，或放入 `sys.path` 包含的其他目录，保持扩展名不变，然后正常执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 版本可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
+
 最小示例：
 
 ```python
@@ -132,6 +140,8 @@ python -m pytest
 python -m pip install build
 python -m build --wheel
 ```
+
+`build_ext --inplace` 在源码根目录生成可直接导入的 `pyminiwebview.pyd`；`python -m build --wheel` 在 `dist/` 生成可分发的 abi3 wheel。wheel 已包含 pyd，无需另外复制 `vendor/` 头文件或 WebView2 SDK。
 
 `setup.py` 同时设置 `py_limited_api=True`，`setup.cfg` 指定 `cp39` ABI 基线。GitHub Actions 使用 cibuildwheel 构建并测试 `win_amd64` 的 abi3 wheel；发布 GitHub Release 时通过 PyPI Trusted Publishing 发布。PyPI 项目需先配置对应仓库和工作流的 trusted publisher。
 
