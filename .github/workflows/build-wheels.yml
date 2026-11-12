@@ -1,0 +1,45 @@
+name: Build and publish wheels
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheel:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          architecture: x64
+      - name: Build abi3 wheel
+        uses: pypa/cibuildwheel@v3
+        env:
+          CIBW_BUILD: cp39-win_amd64
+          CIBW_TEST_REQUIRES: pytest
+          CIBW_TEST_COMMAND: python -m pytest {project}/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pyminiwebview-wheel
+          path: wheelhouse/*.whl
+
+  publish:
+    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: build-wheel
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pyminiwebview-wheel
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
