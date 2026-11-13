@@ -30,8 +30,11 @@ Homepage = "https://github.com/RonTang/pyminiwebview"
 Source = "https://github.com/RonTang/pyminiwebview"
 
 [tool.setuptools]
-packages = []
+packages = ["pyminiwebview_win32"]
+package-dir = {"" = "src"}
+include-package-data = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 addopts = "-ra"

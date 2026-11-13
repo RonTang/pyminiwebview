@@ -2,10 +2,13 @@ import ctypes
 import gc
 import json
 import os
+import sys
 import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 PROCESS_START = time.perf_counter()
 IMPORT_START = time.perf_counter()
@@ -213,7 +216,9 @@ dwmapi.DwmSetWindowAttribute.restype = wintypes.LONG
 
 
 def load_html():
-    fixture = Path(__file__).resolve().parent / "tests" / "fixtures" / "neon.html"
+    fixture = (
+        Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "neon.html"
+    )
     return fixture.read_text(encoding="utf-8")
 
 
@@ -301,7 +306,9 @@ class NeonWindow:
             autosize=True,
             bgcolor=BORDER_COLOR,
             app_name="pyminiwebview-local-test",
-            user_data_folder=str(Path(".webview-test-data").resolve()),
+            user_data_folder=str(
+                Path(__file__).resolve().parent.parent / ".webview-test-data"
+            ),
         )
         padding = self.ring_padding()
         if not user32.SetWindowPos(

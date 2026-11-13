@@ -69,7 +69,7 @@
    ```bash
    python setup.py build_ext --inplace
    python -m pytest -q
-   python test2.py
+   python manual_tests/test_frameless.py
    ```
 9. 重新导出 patch，并验证它能从干净上游基线重现当前文件。
 10. 更新本文件的 tag、完整 commit 和同步日期，以及根 README 的基线信息。
@@ -81,6 +81,6 @@
 - 上游公开 API 覆盖本补丁的完整语义，而非仅覆盖部分参数或单一线程场景。
 - `_module.cpp` 能完全改用上游 API，不再调用本地扩展入口。
 - 创建目录、权限默认值、加速键、后台终止、投递失败及析构清理行为均无回归。
-- pytest 与真实 `test2.py` 窗口测试全部通过。
+- pytest 与真实 `manual_tests/test_frameless.py` 窗口测试全部通过。
 
 满足后删除对应补丁区和 Python 侧适配，并重新生成 patch。若三个补丁全部退役，patch 文件可以为空，但本文件仍记录所用上游基线。

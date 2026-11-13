@@ -118,6 +118,41 @@ JS 绑定回调签名为 `fn(request_id, request_json)`；第二个参数是 JSO
 - 若兜底析构发生在非 UI 线程，原生资源会投递到创建线程的消息队列销毁；需要该线程继续运行或泵送消息。显式 `close()` 仍是推荐做法。
 - 嵌入宿主应在窗口显示后按需调用 `set_focus()`；构造阶段不再主动 `MoveFocus`，避免初始化时序竞态。
 
+### 可选 Win32 助手
+
+wheel 同时包含纯 Python、零第三方依赖的 `pyminiwebview_win32` 助手包，不扩大原生 WebView2 核心。文件对话框在 UI 线程调用；取消返回 `None`，`CommDlgExtendedError` 非零时抛出 `OSError`。保存对话框允许新文件，并提示覆盖已有文件。
+
+```python
+from pyminiwebview_win32 import open_file_dialog, save_file_dialog
+
+source = open_file_dialog(
+    hwnd_owner=view.get_native_handle(pyminiwebview.NATIVE_HANDLE_KIND_UI_WINDOW),
+    filters=[("Text Files", "*.txt"), ("All Files", "*.*")],
+)
+target = save_file_dialog(initial_file="new.txt")
+```
+
+托盘图标使用完整 64 位 Win32 结构体和 `HWND_MESSAGE` 隐藏窗口。必须在 `run()` 所在线程创建和移除，退出时调用幂等的 `remove()`：
+
+```python
+from pyminiwebview_win32 import TrayIcon
+
+tray = TrayIcon(tooltip="My App", on_click=lambda: view.set_focus())
+with pyminiwebview.WebView() as view:
+    try:
+        view.run()
+    finally:
+        tray.remove()
+```
+
+需要区分左右键时使用 `on_left_click` 和 `on_right_click`；通用 `on_click` 仍兼容两种点击。运行 `python manual_tests/test_tray.py` 可验证完整托盘应用行为：关闭按钮只隐藏窗口，左键显示/隐藏，右键菜单提供“Show / Hide”和“Exit”，只有退出菜单结束程序。
+
+全屏、宿主标题、菜单、快捷键和其他 Shell 高级集成仍由应用通过 `ctypes` 等自行处理，不引入 `pywin32` 依赖。
+
+### 多窗口与宿主
+
+嵌入已有窗口使用 `WebView(window=host_hwnd, autosize=True)`；`get_native_handle()` 已提供顶层窗口、WebView 控件和浏览器控制器句柄，无需重复的 `parent_hwnd` API。多个 WebView 的窗口关系、焦点和生命周期由应用管理；同一 UI 线程只运行一个共享消息循环，不为每个窗口分别启动消息泵。
+
 ### 桌面应用模式
 
 ```python
@@ -194,7 +229,7 @@ python -m build --wheel
 2. 在临时目录检出该 tag，确认文件布局和 WebView2 SDK 版本。
 3. 用上游 `core/include/webview*` 替换 `vendor/` 对应文件，再执行 `git apply --check` 并应用现有 patch。
 4. 若补丁冲突，只手工移植上述三个 API；检查所有改动均有成对标记。
-5. 运行 `build_ext --inplace`、完整 pytest 和真实 `test2.py` 窗口测试。
+5. 运行 `build_ext --inplace`、完整 pytest 和真实 `manual_tests/test_frameless.py` 窗口测试。
 6. 从干净上游基线重新生成 patch，验证应用后文件一致，再更新 tag、commit 和同步日期。
 
 上游已实现同名功能时不能直接退役补丁。只有其公开 API 覆盖完整语义、`_module.cpp` 可完全移除本地扩展调用，且目录/权限/线程/析构行为与全部测试均无回归时才退役；删除对应补丁后重新生成 patch。
@@ -211,17 +246,20 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - 幂等 `close()`、上下文管理器、绑定引用环回收、非 UI 线程 GC 后的 UI 原生收尾。
 - 排队 dispatch 在 close/析构时取消且释放引用，反复创建销毁和 dispatch/terminate/close 并发压力。
 - 非法参数抛出 Python 异常，64 位 `HWND` 参数解析。
+- 文件对话框 flags、路径缓冲区、取消/错误语义，以及真实托盘创建、消息回调和清理。
 
 GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.11、3.12、3.13 和 3.14，逐版本执行真实 WebView2 创建、配置、位置通知和关闭。
 
 ## 验证
 
-运行 `python test2.py` 打开自包含的无边框宿主示例，手动确认：
+运行 `python manual_tests/test_frameless.py` 打开自包含的无边框宿主示例，手动确认：
 
 - F5/Ctrl+R 不再刷新应用界面。
 - 点击“系统浏览器验证”链接后，页面新窗口请求转到系统浏览器。
 - 无边框窗最大化不遮挡任务栏，还原后位置正确，且无法缩小到 640×480 以下。
 - 打开 `select` 弹层并拖动窗口若干次，再次打开时弹层跟随宿主位置，不发生坐标漂移。
+
+Win32 助手另需人工确认：打开对话框能选择已有文件、取消返回 `None`；保存对话框允许新文件并提示覆盖；托盘左右键触发回调，`remove()` 后无图标残留。
 
 ## CHANGELOG
 
@@ -232,6 +270,7 @@ GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.
 - 增加生命周期压力测试、宿主先销毁覆盖和 CPython 3.9–3.14 abi3 真实创建矩阵。
 - 外部新窗口仅允许 `http`/`https`，并检查 `ShellExecuteW` 返回值。
 - 移除构造阶段的主动 `MoveFocus`，由宿主显示后调用 `set_focus()`，避免初始化焦点竞态。
+- 新增纯 Python `pyminiwebview_win32` 助手包，提供文件对话框和完整 64 位托盘实现。
 
 ### 0.1.1
 
