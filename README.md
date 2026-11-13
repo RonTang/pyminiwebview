@@ -22,16 +22,16 @@
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
 
-**注意：项目暂未上传 PyPI，`python -m pip install pyminiwebview` 目前不可用。** 请先从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel，或直接使用本地构建产物。未来发布到 PyPI 后可使用：
+**注意：项目暂未上传 PyPI，`python -m pip install pyminiwebview` 目前不可用。** 请先从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后也可从 Releases 页面获取。未来发布到 PyPI 后可使用：
 
 ```bash
 python -m pip install pyminiwebview
 ```
 
-安装下载或本地构建的 wheel 时，将包名替换为 wheel 路径：
+安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install dist\pyminiwebview-0.1.0-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.0-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将 `pyminiwebview.pyd` 或 `pyminiwebview.abi3.pyd` 放到应用脚本同目录，或放入 `sys.path` 包含的其他目录，保持扩展名不变，然后正常执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 版本可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
