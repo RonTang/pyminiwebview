@@ -386,10 +386,11 @@ static PyObject *WebView_run(WebViewObject *self, PyObject *args) {
   webview_error_t error;
   // The message loop blocks for an arbitrary time and never needs the GIL.
   Py_BEGIN_ALLOW_THREADS
-  error = webview_run(self->webview, reinterpret_cast<HWND>(hwnd),
-                      reinterpret_cast<HACCEL>(haccel));
+  error = webview_run_with_accelerators(self->webview,
+                                        reinterpret_cast<HWND>(hwnd),
+                                        reinterpret_cast<HACCEL>(haccel));
   Py_END_ALLOW_THREADS
-  if (check_webview_error(error, "webview_run") < 0) {
+  if (check_webview_error(error, "webview_run_with_accelerators") < 0) {
     return nullptr;
   }
   Py_RETURN_NONE;

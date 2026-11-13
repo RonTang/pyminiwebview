@@ -260,10 +260,12 @@ WEBVIEW_API webview_error_t webview_destroy(webview_t w);
  *
  * @param w The webview instance.
  */
+WEBVIEW_API webview_error_t webview_run(webview_t w);
 // ==== pyminiwebview patch begin ====
-// webview_run: retain optional Win32 accelerator handles without changing other backends.
+// webview_run_with_accelerators: add optional Win32 accelerator handles.
 // Dependency: WebView_run in src/pyminiwebview/_module.cpp.
-WEBVIEW_API webview_error_t webview_run(webview_t w, void *hwnd, void *haccel);
+WEBVIEW_API webview_error_t webview_run_with_accelerators(webview_t w, void *hwnd,
+                                                          void *haccel);
 // ==== pyminiwebview patch end ====
 
 /**
@@ -4065,7 +4067,7 @@ public:
   }
 
 // ==== pyminiwebview patch begin ====
-// webview_run: expose accelerators only on the Win32 engine.
+// webview_run_with_accelerators: expose accelerators only on the Win32 engine.
 // Dependency: WebView_run in src/pyminiwebview/_module.cpp.
   noresult run_with_accelerators(HWND hwnd, HACCEL haccel) {
     return run_loop(hwnd, haccel);
@@ -4142,7 +4144,7 @@ public:
 
 protected:
 // ==== pyminiwebview patch begin ====
-// webview_run: keep the upstream entry point and delegate to the Win32 loop.
+// webview_run_with_accelerators: keep the upstream entry point and delegate to the Win32 loop.
 // Dependency: WebView_run in src/pyminiwebview/_module.cpp.
   noresult run_impl() override { return run_loop(nullptr, nullptr); }
 // ==== pyminiwebview patch end ====
@@ -4450,7 +4452,7 @@ private:
   }
 
 // ==== pyminiwebview patch begin ====
-// webview_run: support accelerators and report GetMessageW failures.
+// webview_run_with_accelerators: support accelerators and report GetMessageW failures.
 // Dependency: WebView_run in src/pyminiwebview/_module.cpp.
   noresult run_loop(HWND hwnd, HACCEL haccel) {
     MSG msg;
@@ -4568,10 +4570,15 @@ WEBVIEW_API webview_error_t webview_destroy(webview_t w) {
   });
 }
 
+WEBVIEW_API webview_error_t webview_run(webview_t w) {
+  return webview_run_with_accelerators(w, nullptr, nullptr);
+}
+
 // ==== pyminiwebview patch begin ====
-// webview_run: forward optional native handles to the Win32 engine.
+// webview_run_with_accelerators: forward optional native handles to Win32.
 // Dependency: WebView_run in src/pyminiwebview/_module.cpp.
-WEBVIEW_API webview_error_t webview_run(webview_t w, void *hwnd, void *haccel) {
+WEBVIEW_API webview_error_t webview_run_with_accelerators(webview_t w, void *hwnd,
+                                                          void *haccel) {
   using namespace webview::detail;
   return api_filter([=] {
     return cast_to_webview(w)->run_with_accelerators(

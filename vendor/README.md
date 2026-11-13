@@ -21,7 +21,7 @@
 
 ## 补丁封顶原则
 
-引擎补丁仅限 `webview_create_ex`、`webview_run(hwnd, haccel)`、`webview_dispatch` 这三个 API 及其必需的内部实现。新需求必须放在 Python 绑定层或项目自有源码文件中，不再扩充 vendor 改动范围。
+引擎补丁仅限 `webview_create_ex`、`webview_run_with_accelerators(hwnd, haccel)`、`webview_dispatch` 这三个 API 及其必需的内部实现。`webview_run(w)` 保持上游公开签名，并转调加速键版本且传入空句柄。新需求必须放在 Python 绑定层或项目自有源码文件中，不再扩充 vendor 改动范围。
 
 ## 补丁清单
 
@@ -32,9 +32,9 @@
    - 嵌入模式也初始化 COM STA。
    - Python 依赖：`WebView_init`。
    - 背景色不属于本补丁，由 `_module.cpp` 直接调用 WebView2 API。
-2. `webview_run(hwnd, haccel)`
+2. `webview_run_with_accelerators(hwnd, haccel)`
    - 仅为 Win32 后端增加可选加速键句柄。
-   - 保留上游无参数内部 `run()`，不改变其他平台接口。
+   - `webview_run(w)` 恢复上游公开签名，内部以空句柄转调加速键版本；不改变其他平台的公开接口。
    - 检查 `GetMessageW` 失败。
    - Python 依赖：`WebView_run`。
 3. `webview_dispatch`

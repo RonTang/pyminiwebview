@@ -1,5 +1,5 @@
 diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
-index e14eb5b..1cac6d8 100644
+index e14eb5b..a16d561 100644
 --- a/vendor/webview/webview.h
 +++ b/vendor/webview/webview.h
 @@ -239,6 +239,15 @@ extern "C" {
@@ -18,20 +18,20 @@ index e14eb5b..1cac6d8 100644
  /**
   * Destroys a webview instance and closes the native window.
   *
-@@ -251,7 +260,11 @@ WEBVIEW_API webview_error_t webview_destroy(webview_t w);
-  *
+@@ -252,6 +261,12 @@ WEBVIEW_API webview_error_t webview_destroy(webview_t w);
   * @param w The webview instance.
   */
--WEBVIEW_API webview_error_t webview_run(webview_t w);
+ WEBVIEW_API webview_error_t webview_run(webview_t w);
 +// ==== pyminiwebview patch begin ====
-+// webview_run: retain optional Win32 accelerator handles without changing other backends.
++// webview_run_with_accelerators: add optional Win32 accelerator handles.
 +// Dependency: WebView_run in src/pyminiwebview/_module.cpp.
-+WEBVIEW_API webview_error_t webview_run(webview_t w, void *hwnd, void *haccel);
++WEBVIEW_API webview_error_t webview_run_with_accelerators(webview_t w, void *hwnd,
++                                                          void *haccel);
 +// ==== pyminiwebview patch end ====
  
  /**
   * Stops the main loop. It is safe to call this function from another other
-@@ -3569,8 +3582,15 @@ class webview2_com_handler
+@@ -3569,8 +3584,15 @@ class webview2_com_handler
        std::function<void(ICoreWebView2Controller *, ICoreWebView2 *webview)>;
  
  public:
@@ -49,7 +49,7 @@ index e14eb5b..1cac6d8 100644
  
    virtual ~webview2_com_handler() = default;
    webview2_com_handler(const webview2_com_handler &other) = delete;
-@@ -3658,16 +3678,26 @@ public:
+@@ -3658,16 +3680,26 @@ public:
      CoTaskMemFree(message);
      return S_OK;
    }
@@ -78,7 +78,7 @@ index e14eb5b..1cac6d8 100644
  
    // Set the function that will perform the initiating logic for creating
    // the WebView2 environment.
-@@ -3707,6 +3737,11 @@ private:
+@@ -3707,6 +3739,11 @@ private:
    webview2_com_handler_cb_t m_cb;
    std::atomic<ULONG> m_ref_count{1};
    std::function<HRESULT()> m_attempt_handler;
@@ -90,7 +90,7 @@ index e14eb5b..1cac6d8 100644
    unsigned int m_max_attempts = 5;
    unsigned int m_attempts = 0;
  };
-@@ -3783,7 +3818,17 @@ private:
+@@ -3783,7 +3820,17 @@ private:
  
  class win32_edge_engine : public engine_base {
  public:
@@ -109,7 +109,7 @@ index e14eb5b..1cac6d8 100644
      if (!is_webview2_available()) {
        throw exception{WEBVIEW_ERROR_MISSING_DEPENDENCY,
                        "WebView2 is unavailable"};
-@@ -3791,8 +3836,12 @@ public:
+@@ -3791,8 +3838,12 @@ public:
  
      HINSTANCE hInstance = GetModuleHandle(nullptr);
  
@@ -123,7 +123,7 @@ index e14eb5b..1cac6d8 100644
        enable_dpi_awareness();
  
        HICON icon = (HICON)LoadImage(
-@@ -3965,13 +4014,22 @@ public:
+@@ -3965,13 +4016,22 @@ public:
          return DefWindowProcW(hwnd, msg, wp, lp);
        }
  
@@ -147,7 +147,7 @@ index e14eb5b..1cac6d8 100644
        case WM_DESTROY:
          w->m_message_window = nullptr;
          SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-@@ -3979,6 +4037,7 @@ public:
+@@ -3979,6 +4039,7 @@ public:
        default:
          return DefWindowProcW(hwnd, msg, wp, lp);
        }
@@ -155,7 +155,7 @@ index e14eb5b..1cac6d8 100644
        return 0;
      });
      RegisterClassExW(&message_wc);
-@@ -3997,9 +4056,22 @@ public:
+@@ -3997,9 +4058,22 @@ public:
      auto cb =
          std::bind(&win32_edge_engine::on_message, this, std::placeholders::_1);
  
@@ -169,7 +169,7 @@ index e14eb5b..1cac6d8 100644
    }
  
 +// ==== pyminiwebview patch begin ====
-+// webview_run: expose accelerators only on the Win32 engine.
++// webview_run_with_accelerators: expose accelerators only on the Win32 engine.
 +// Dependency: WebView_run in src/pyminiwebview/_module.cpp.
 +  noresult run_with_accelerators(HWND hwnd, HACCEL haccel) {
 +    return run_loop(hwnd, haccel);
@@ -179,7 +179,7 @@ index e14eb5b..1cac6d8 100644
    virtual ~win32_edge_engine() {
      if (m_com_handler) {
        m_com_handler->Release();
-@@ -4041,12 +4113,26 @@ public:
+@@ -4041,12 +4115,26 @@ public:
        // behavior across backends.
        deplete_run_loop_event_queue();
      }
@@ -207,7 +207,7 @@ index e14eb5b..1cac6d8 100644
    }
  
    win32_edge_engine(const win32_edge_engine &other) = delete;
-@@ -4055,14 +4141,11 @@ public:
+@@ -4055,14 +4143,11 @@ public:
    win32_edge_engine &operator=(win32_edge_engine &&other) = delete;
  
  protected:
@@ -220,14 +220,14 @@ index e14eb5b..1cac6d8 100644
 -    return {};
 -  }
 +// ==== pyminiwebview patch begin ====
-+// webview_run: keep the upstream entry point and delegate to the Win32 loop.
++// webview_run_with_accelerators: keep the upstream entry point and delegate to the Win32 loop.
 +// Dependency: WebView_run in src/pyminiwebview/_module.cpp.
 +  noresult run_impl() override { return run_loop(nullptr, nullptr); }
 +// ==== pyminiwebview patch end ====
    result<void *> window_impl() override {
      if (m_window) {
        return m_window;
-@@ -4081,14 +4164,32 @@ protected:
+@@ -4081,14 +4166,32 @@ protected:
      }
      return error_info{WEBVIEW_ERROR_INVALID_STATE};
    }
@@ -262,7 +262,7 @@ index e14eb5b..1cac6d8 100644
  
    noresult set_title_impl(const std::string &title) override {
      SetWindowTextW(m_window, widen_string(title).c_str());
-@@ -4183,21 +4284,36 @@ protected:
+@@ -4183,21 +4286,36 @@ protected:
    }
  
  private:
@@ -310,7 +310,7 @@ index e14eb5b..1cac6d8 100644
  
      m_com_handler = new webview2_com_handler(
          wnd, cb,
-@@ -4211,12 +4327,14 @@ private:
+@@ -4211,12 +4329,14 @@ private:
            m_controller = controller;
            m_webview = webview;
            flag.clear();
@@ -327,12 +327,12 @@ index e14eb5b..1cac6d8 100644
      m_com_handler->try_create_environment();
  
      // Pump the message loop until WebView2 has finished initialization.
-@@ -4331,6 +4449,25 @@ private:
+@@ -4331,6 +4451,25 @@ private:
      }
    }
  
 +// ==== pyminiwebview patch begin ====
-+// webview_run: support accelerators and report GetMessageW failures.
++// webview_run_with_accelerators: support accelerators and report GetMessageW failures.
 +// Dependency: WebView_run in src/pyminiwebview/_module.cpp.
 +  noresult run_loop(HWND hwnd, HACCEL haccel) {
 +    MSG msg;
@@ -353,7 +353,7 @@ index e14eb5b..1cac6d8 100644
    // Blocks while depleting the run loop of events.
    void deplete_run_loop_event_queue() {
      bool done{};
-@@ -4400,6 +4537,29 @@ WEBVIEW_API webview_t webview_create(int debug, void *wnd) {
+@@ -4400,6 +4539,29 @@ WEBVIEW_API webview_t webview_create(int debug, void *wnd) {
    return nullptr;
  }
  
@@ -383,15 +383,18 @@ index e14eb5b..1cac6d8 100644
  WEBVIEW_API webview_error_t webview_destroy(webview_t w) {
    using namespace webview::detail;
    return api_filter([=]() -> webview::noresult {
-@@ -4408,10 +4568,17 @@ WEBVIEW_API webview_error_t webview_destroy(webview_t w) {
-   });
+@@ -4409,9 +4571,21 @@ WEBVIEW_API webview_error_t webview_destroy(webview_t w) {
  }
  
--WEBVIEW_API webview_error_t webview_run(webview_t w) {
+ WEBVIEW_API webview_error_t webview_run(webview_t w) {
++  return webview_run_with_accelerators(w, nullptr, nullptr);
++}
++
 +// ==== pyminiwebview patch begin ====
-+// webview_run: forward optional native handles to the Win32 engine.
++// webview_run_with_accelerators: forward optional native handles to Win32.
 +// Dependency: WebView_run in src/pyminiwebview/_module.cpp.
-+WEBVIEW_API webview_error_t webview_run(webview_t w, void *hwnd, void *haccel) {
++WEBVIEW_API webview_error_t webview_run_with_accelerators(webview_t w, void *hwnd,
++                                                          void *haccel) {
    using namespace webview::detail;
 -  return api_filter([=] { return cast_to_webview(w)->run(); });
 +  return api_filter([=] {
