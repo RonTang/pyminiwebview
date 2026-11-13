@@ -31,7 +31,7 @@ python -m pip install pyminiwebview
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.0-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.1-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将 `pyminiwebview.pyd` 或 `pyminiwebview.abi3.pyd` 放到应用脚本同目录，或放入 `sys.path` 包含的其他目录，保持扩展名不变，然后正常执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 版本可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
@@ -107,9 +107,27 @@ WebView(
 - `user_data_folder`：显式指定 WebView2 用户数据目录。默认使用 `%LOCALAPPDATA%\<app_name>`，不再根据 `python.exe` 推导。
 - `clipboard_permission`：`"default"`（默认，由 WebView2 询问用户）、`"allow"` 或 `"deny"`，控制剪贴板读取权限请求。
 
-方法：`js_bind(name, fn)`、`js_eval(js)`、`js_init(js)`、`js_return(id, status, result)`、`js_unbind(name)`、`navigate(url)`、`set_html(html)`、`set_title(title)`、`set_size(width, height, hints=0)`、`set_focus()`、`get_native_handle(kind)`、`run(hwnd=0, haccel=0)`、`terminate()`、`dispatch(fn)`。
+方法：`configure_app_mode(...)`、`notify_parent_position()`、`js_bind(name, fn)`、`js_eval(js)`、`js_init(js)`、`js_return(id, status, result)`、`js_unbind(name)`、`navigate(url)`、`set_html(html)`、`set_title(title)`、`set_size(width, height, hints=0)`、`set_focus()`、`get_native_handle(kind)`、`run(hwnd=0, haccel=0)`、`terminate()`、`dispatch(fn)`。
 
 JS 绑定回调签名为 `fn(request_id, request_json)`；第二个参数是 JSON 数组字符串，回调返回值不会被隐式发送，需显式调用 `js_return`。
+
+### 桌面应用模式
+
+```python
+view.configure_app_mode(
+    disable_browser_accelerators=True,
+    disable_nc_region_support=True,
+    redirect_new_window_to_system_browser=True,
+)
+```
+
+三个参数默认均为 `True`：
+
+- `disable_browser_accelerators`：通过 `ICoreWebView2Settings3` 禁用浏览器加速键，防止 F5/Ctrl+R 刷新应用界面和 Ctrl+F 打开查找栏；应用自己的加速键通过 `run(hwnd, haccel)` 的 `HACCEL` 处理。接口查询或设置失败会抛出带 HRESULT 的 `RuntimeError`。
+- `disable_nc_region_support`：通过 `ICoreWebView2Settings9` 显式关闭非客户区支持，避免 CSS `app-region` 生成的进程内子窗吞掉宿主 `WM_NCHITTEST` 边缘命中。运行时过旧而返回 `E_NOINTERFACE` 时表示该功能本来就不存在，会安全跳过；其他失败抛出 `RuntimeError`。
+- `redirect_new_window_to_system_browser`：用 `NewWindowRequested` 将 `window.open` 等请求转到系统默认浏览器，并标记请求已处理；重复配置不会重复注册事件。
+
+上述桌面应用策略参考 [Wails](https://github.com/wailsapp/wails) 实践，仅使用 WebView2 公共 API。宿主窗口收到 `WM_MOVE` 时调用 `view.notify_parent_position()`，通过 `NotifyParentWindowPositionChanged` 防止 `select` 下拉、日期选择器等页面原生弹层按旧坐标漂移。
 
 ## 相对 python-webview2 的修复与差异
 
@@ -149,7 +167,7 @@ python -m build --wheel
 
 ## vendored 代码与补丁管理
 
-当前基线为 webview/webview **tag `0.12.0`**，完整 commit **`3ab4b5d722438fc8a13e6ca830c5e2372d19a01d`**，同步日期 **2026-11-12**。上游 `core/include/webview*` 映射到本仓库 `vendor/`；WebView2 SDK 使用上游配置的官方 `1.0.1150.38` 头文件。
+当前基线为 webview/webview **tag `0.12.0`**，完整 commit **`3ab4b5d722438fc8a13e6ca830c5e2372d19a01d`**，同步日期 **2026-11-12**。上游 `core/include/webview*` 映射到本仓库 `vendor/`；WebView2 SDK 使用官方 `1.0.2420.47` 头文件，以支持 `ICoreWebView2Settings9` 的非客户区设置。
 
 本地仅保留三个引擎 API 补丁：
 
@@ -182,7 +200,21 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - 实际 JS→Python 回调与 `js_return`。
 - `run()` 期间 `threading.Timer` 能执行，且 `dispatch` 在 UI 线程运行。
 - 通过 `CreateWindowExW` 创建宿主窗口并验证 autosize。
+- `configure_app_mode()` 的默认配置与重复调用，以及 `notify_parent_position()`。
 - 非法参数抛出 Python 异常，64 位 `HWND` 参数解析。
+
+## CHANGELOG
+
+### 0.1.1
+
+- 新增 `configure_app_mode()`：禁用浏览器加速键和非客户区子窗，并将新窗口请求转到系统浏览器。
+- 新增 `notify_parent_position()`，供宿主 `WM_MOVE` 同步页面原生弹层坐标。
+- WebView2 SDK 头文件升级到官方 `1.0.2420.47`。
+- 恢复上游 `webview_run(w)` 签名，加速键入口独立为 `webview_run_with_accelerators()`。
+
+### 0.1.0
+
+- 首个 Stable ABI 基线：独立/嵌入窗口、JavaScript 绑定、UI 线程投递和真实 WebView2 测试。
 
 ## 致谢与许可
 

@@ -113,6 +113,15 @@ def test_queued_dispatch_releases_callable_on_destruction(tmp_path):
     assert sys.getrefcount(callback) == baseline
 
 
+def test_configure_app_mode_smoke(webview):
+    webview.configure_app_mode()
+    webview.configure_app_mode()
+
+
+def test_notify_parent_position(webview):
+    webview.notify_parent_position()
+
+
 def test_invalid_arguments_raise_python_exceptions(webview, tmp_path):
     with pytest.raises(TypeError):
         pyminiwebview.WebView(width="wide")

@@ -8,7 +8,7 @@
 - 同步日期：2026-11-12
 - 上游文件 `core/include/webview/webview.h` → `vendor/webview/webview.h`
 - 上游文件 `core/include/webview.h` → `vendor/webview.h`
-- WebView2 SDK：`Microsoft.Web.WebView2 1.0.1150.38`，与上游该 tag 的 CMake 配置一致；官方头文件位于 `vendor/WebView2*.h`。
+- WebView2 SDK：`Microsoft.Web.WebView2 1.0.2420.47`；为使用 `ICoreWebView2Settings9` 的非客户区支持开关，从上游 0.12.0 配置的 `1.0.1150.38` 升级到首个包含该稳定接口的官方版本。官方头文件位于 `vendor/WebView2*.h`，引擎补丁不因此扩大。
 
 只有 `vendor/webview/webview.h` 含本地补丁。所有补丁区域均由以下标记成对包围：
 

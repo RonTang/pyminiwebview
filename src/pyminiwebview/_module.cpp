@@ -11,11 +11,67 @@
 
 #include <windows.h>
 #include <commctrl.h>
+#include <shellapi.h>
 
 #include <climits>
 #include <memory>
 #include <new>
 #include <string>
+
+class NewWindowRequestedHandler final
+    : public ICoreWebView2NewWindowRequestedEventHandler {
+public:
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
+                                           void **object) override {
+    if (object == nullptr) {
+      return E_POINTER;
+    }
+    if (IsEqualIID(riid, IID_IUnknown) ||
+        IsEqualIID(riid, IID_ICoreWebView2NewWindowRequestedEventHandler)) {
+      *object = static_cast<ICoreWebView2NewWindowRequestedEventHandler *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *object = nullptr;
+    return E_NOINTERFACE;
+  }
+
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    return static_cast<ULONG>(InterlockedIncrement(&m_ref_count));
+  }
+
+  ULONG STDMETHODCALLTYPE Release() override {
+    ULONG count = static_cast<ULONG>(InterlockedDecrement(&m_ref_count));
+    if (count == 0) {
+      delete this;
+    }
+    return count;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  Invoke(ICoreWebView2 *sender,
+         ICoreWebView2NewWindowRequestedEventArgs *args) override {
+    (void)sender;
+    if (args == nullptr) {
+      return E_POINTER;
+    }
+    LPWSTR uri = nullptr;
+    HRESULT result = args->get_Uri(&uri);
+    if (FAILED(result)) {
+      return result;
+    }
+    if (uri == nullptr) {
+      return E_UNEXPECTED;
+    }
+    // Wails-style desktop app policy: open external pages in the system browser.
+    ShellExecuteW(nullptr, L"open", uri, nullptr, nullptr, SW_SHOWNORMAL);
+    CoTaskMemFree(uri);
+    return args->put_Handled(TRUE);
+  }
+
+private:
+  LONG m_ref_count = 1;
+};
 
 typedef struct {
   PyObject_HEAD
@@ -24,6 +80,9 @@ typedef struct {
   HWND parent;
   HWND widget;
   HICON icon;
+  NewWindowRequestedHandler *new_window_handler;
+  EventRegistrationToken new_window_token;
+  int new_window_registered;
   int embedded;
   int autosize;
 } WebViewObject;
@@ -42,6 +101,13 @@ static int set_webview_error(const char *operation, webview_error_t error) {
   }
   PyErr_Format(exception, "%s failed (webview error %d)", operation,
                static_cast<int>(error));
+  return -1;
+}
+
+static int set_webview2_error(const char *operation, HRESULT result) {
+  PyErr_Format(PyExc_RuntimeError,
+               "%s failed (HRESULT 0x%08lX); WebView2 Runtime may be too old",
+               operation, static_cast<unsigned long>(result));
   return -1;
 }
 
@@ -179,6 +245,105 @@ static int set_background_color(WebViewObject *self, COLORREF color) {
   return 0;
 }
 
+static int configure_app_mode(WebViewObject *self,
+                              int disable_browser_accelerators,
+                              int disable_nc_region_support,
+                              int redirect_new_window_to_system_browser) {
+  void *handle = webview_get_native_handle(
+      self->webview, WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER);
+  if (handle == nullptr) {
+    PyErr_SetString(PyExc_RuntimeError, "WebView2 controller is unavailable");
+    return -1;
+  }
+  auto *controller = static_cast<ICoreWebView2Controller *>(handle);
+  ICoreWebView2 *core = nullptr;
+  HRESULT result = controller->get_CoreWebView2(&core);
+  if (FAILED(result)) {
+    return set_webview2_error("get_CoreWebView2 for configure_app_mode", result);
+  }
+  ICoreWebView2Settings *settings = nullptr;
+  result = core->get_Settings(&settings);
+  if (FAILED(result)) {
+    core->Release();
+    return set_webview2_error("get_Settings for configure_app_mode", result);
+  }
+
+  if (disable_browser_accelerators) {
+    ICoreWebView2Settings3 *settings3 = nullptr;
+    result = settings->QueryInterface(IID_PPV_ARGS(&settings3));
+    if (FAILED(result)) {
+      settings->Release();
+      core->Release();
+      return set_webview2_error(
+          "ICoreWebView2Settings3 query for disable_browser_accelerators",
+          result);
+    }
+    // Wails practice: keep F5/Ctrl+R/Ctrl+F from turning app UI into a browser.
+    result = settings3->put_AreBrowserAcceleratorKeysEnabled(VARIANT_FALSE);
+    settings3->Release();
+    if (FAILED(result)) {
+      settings->Release();
+      core->Release();
+      return set_webview2_error(
+          "put_AreBrowserAcceleratorKeysEnabled for "
+          "disable_browser_accelerators",
+          result);
+    }
+  }
+
+  if (disable_nc_region_support) {
+    ICoreWebView2Settings9 *settings9 = nullptr;
+    result = settings->QueryInterface(IID_PPV_ARGS(&settings9));
+    if (result == E_NOINTERFACE) {
+      // Runtime <102 already lacks non-client region child windows entirely.
+    } else if (FAILED(result)) {
+      settings->Release();
+      core->Release();
+      return set_webview2_error(
+          "ICoreWebView2Settings9 query for disable_nc_region_support", result);
+    } else {
+      // Prevent CSS app-region children from swallowing host WM_NCHITTEST.
+      result = settings9->put_IsNonClientRegionSupportEnabled(VARIANT_FALSE);
+      settings9->Release();
+      if (FAILED(result)) {
+        settings->Release();
+        core->Release();
+        return set_webview2_error(
+            "put_IsNonClientRegionSupportEnabled for "
+            "disable_nc_region_support",
+            result);
+      }
+    }
+  }
+
+  if (redirect_new_window_to_system_browser && !self->new_window_registered) {
+    auto *handler = new (std::nothrow) NewWindowRequestedHandler();
+    if (handler == nullptr) {
+      settings->Release();
+      core->Release();
+      PyErr_NoMemory();
+      return -1;
+    }
+    EventRegistrationToken token{};
+    result = core->add_NewWindowRequested(handler, &token);
+    if (FAILED(result)) {
+      handler->Release();
+      settings->Release();
+      core->Release();
+      return set_webview2_error(
+          "add_NewWindowRequested for redirect_new_window_to_system_browser",
+          result);
+    }
+    self->new_window_handler = handler;
+    self->new_window_token = token;
+    self->new_window_registered = 1;
+  }
+
+  settings->Release();
+  core->Release();
+  return 0;
+}
+
 static PyObject *WebView_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
   (void)args;
   (void)kwds;
@@ -204,6 +369,23 @@ static void WebView_dealloc(WebViewObject *self) {
     RemoveWindowSubclass(self->parent, auto_size_proc,
                          reinterpret_cast<UINT_PTR>(self));
     self->autosize = 0;
+  }
+  if (self->new_window_registered && webview != nullptr) {
+    void *handle = webview_get_native_handle(
+        webview, WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER);
+    if (handle != nullptr) {
+      auto *controller = static_cast<ICoreWebView2Controller *>(handle);
+      ICoreWebView2 *core = nullptr;
+      if (SUCCEEDED(controller->get_CoreWebView2(&core)) && core != nullptr) {
+        core->remove_NewWindowRequested(self->new_window_token);
+        core->Release();
+      }
+    }
+    self->new_window_registered = 0;
+  }
+  if (self->new_window_handler != nullptr) {
+    self->new_window_handler->Release();
+    self->new_window_handler = nullptr;
   }
   if (webview != nullptr) {
     webview_error_t error = webview_destroy(webview);
@@ -372,6 +554,55 @@ error:
     self->icon = nullptr;
   }
   return -1;
+}
+
+static PyObject *WebView_configure_app_mode(WebViewObject *self, PyObject *args,
+                                            PyObject *kwds) {
+  int disable_browser_accelerators = 1;
+  int disable_nc_region_support = 1;
+  int redirect_new_window_to_system_browser = 1;
+  static char *keywords[] = {
+      (char *)"disable_browser_accelerators",
+      (char *)"disable_nc_region_support",
+      (char *)"redirect_new_window_to_system_browser",
+      nullptr};
+  if (!PyArg_ParseTupleAndKeywords(
+          args, kwds, "|ppp:configure_app_mode", keywords,
+          &disable_browser_accelerators, &disable_nc_region_support,
+          &redirect_new_window_to_system_browser)) {
+    return nullptr;
+  }
+  if (require_webview(self) < 0 ||
+      configure_app_mode(self, disable_browser_accelerators,
+                         disable_nc_region_support,
+                         redirect_new_window_to_system_browser) < 0) {
+    return nullptr;
+  }
+  Py_RETURN_NONE;
+}
+
+static PyObject *WebView_notify_parent_position(WebViewObject *self,
+                                                PyObject *ignored) {
+  (void)ignored;
+  if (require_webview(self) < 0) {
+    return nullptr;
+  }
+  void *handle = webview_get_native_handle(
+      self->webview, WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER);
+  if (handle == nullptr) {
+    PyErr_SetString(PyExc_RuntimeError, "WebView2 controller is unavailable");
+    return nullptr;
+  }
+  auto *controller = static_cast<ICoreWebView2Controller *>(handle);
+  // Wails practice: call from host WM_MOVE so native popups track the window.
+  HRESULT result = controller->NotifyParentWindowPositionChanged();
+  if (FAILED(result)) {
+    PyErr_Format(PyExc_RuntimeError,
+                 "NotifyParentWindowPositionChanged failed (HRESULT 0x%08lX)",
+                 static_cast<unsigned long>(result));
+    return nullptr;
+  }
+  Py_RETURN_NONE;
 }
 
 static PyObject *WebView_run(WebViewObject *self, PyObject *args) {
@@ -694,6 +925,11 @@ static PyObject *WebView_get_native_handle(WebViewObject *self, PyObject *args) 
 }
 
 static PyMethodDef WebView_methods[] = {
+    {"configure_app_mode", (PyCFunction)WebView_configure_app_mode,
+     METH_VARARGS | METH_KEYWORDS,
+     "Apply desktop application policies through public WebView2 APIs."},
+    {"notify_parent_position", (PyCFunction)WebView_notify_parent_position,
+     METH_NOARGS, "Notify WebView2 that the host window position changed."},
     {"run", (PyCFunction)WebView_run, METH_VARARGS,
      "Run the UI message loop without holding the GIL."},
     {"terminate", (PyCFunction)WebView_terminate, METH_NOARGS,
@@ -779,7 +1015,7 @@ PyMODINIT_FUNC PyInit_pyminiwebview(void) {
                    WEBVIEW_NATIVE_HANDLE_KIND_UI_WIDGET) < 0 ||
       add_constant(module, "NATIVE_HANDLE_KIND_BROWSER_CONTROLLER",
                    WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER) < 0 ||
-      PyModule_AddStringConstant(module, "__version__", "0.1.0") < 0) {
+      PyModule_AddStringConstant(module, "__version__", "0.1.1") < 0) {
     Py_DECREF(module);
     return nullptr;
   }
