@@ -38,6 +38,7 @@
    - 检查 `GetMessageW` 失败。
    - Python 依赖：`WebView_run`。
 3. `webview_dispatch`
+   - 上游 0.12.0 已公开该 API；本项目补丁是加固（投递错误上报、析构排空、异常边界和跨线程终止），不是新增 API。
    - 检查 `PostMessageW` 失败并释放投递参数。
    - 析构时排空未执行的投递，释放 Python 回调引用。
    - 阻止 C++ 异常跨 Win32 回调边界。

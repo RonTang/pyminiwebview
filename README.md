@@ -123,7 +123,7 @@ Python 扩展层完全重写，不复用原 `main.c`：
 6. 用户数据目录可显式配置，默认改为 `%LOCALAPPDATA%\<app_name>`。
 7. 剪贴板读取默认 `"default"`，不再无条件允许。
 8. 删除破坏嵌入关系的 `set_fullscreen` 实现，窗口全屏交由宿主处理。
-9. 新增线程安全的 `dispatch(fn)`；销毁时清理尚未执行的投递，避免回调引用泄漏。
+9. 加固上游 `dispatch(fn)` 的线程与错误处理；销毁时清理尚未执行的投递，避免回调引用泄漏。
 10. 嵌入模式统一初始化 COM STA，焦点操作使用 `ICoreWebView2Controller::MoveFocus`，不再依赖 Chromium 内部窗口类名。
 
 ## 构建
@@ -154,8 +154,10 @@ python -m build --wheel
 本地仅保留三个引擎 API 补丁：
 
 1. `webview_create_ex`：用户目录、应用名、剪贴板策略及嵌入 COM 初始化。
-2. `webview_run(hwnd, haccel)`：Win32 加速键和消息循环错误检查。
+2. `webview_run_with_accelerators(hwnd, haccel)`：Win32 加速键和消息循环错误检查；`webview_run(w)` 保持上游签名。
 3. `webview_dispatch`：投递错误、析构清理、异常边界及后台终止。
+
+上游 0.12.0 已公开 `webview_dispatch`；本项目补丁是上述行为的加固，不是新增 API。
 
 **补丁封顶原则：新需求只能放入 Python 层或项目自有源码，不再增加 vendor 补丁 API。** 背景色等 WebView2 操作已经直接在 `_module.cpp` 实现。
 
