@@ -31,25 +31,25 @@ python -m pip install pyminiwebview
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.1-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.2-cp39-abi3-win_amd64.whl
 ```
 
-也可以直接分发 pyd：将 `pyminiwebview.pyd` 或 `pyminiwebview.abi3.pyd` 放到应用脚本同目录，或放入 `sys.path` 包含的其他目录，保持扩展名不变，然后正常执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 版本可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
+也可以直接分发 pyd：将文件命名为 `pyminiwebview.pyd`，放到应用脚本同目录或 `sys.path` 包含的其他目录，然后执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 wheel 可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
 
 最小示例：
 
 ```python
 import pyminiwebview
 
-view = pyminiwebview.WebView(
+with pyminiwebview.WebView(
     title="pyminiwebview",
     width=900,
     height=600,
     app_name="my-app",
     debug=True,
-)
-view.set_html("<h1>Hello from WebView2</h1>")
-view.run()
+) as view:
+    view.set_html("<h1>Hello from WebView2</h1>")
+    view.run()
 ```
 
 JavaScript 调用 Python：
@@ -58,15 +58,14 @@ JavaScript 调用 Python：
 import json
 import pyminiwebview
 
-view = pyminiwebview.WebView(app_name="binding-demo")
+with pyminiwebview.WebView(app_name="binding-demo") as view:
+    def add(request_id, request):
+        values = json.loads(request)
+        view.js_return(request_id, 0, json.dumps(sum(values)))
 
-def add(request_id, request):
-    values = json.loads(request)
-    view.js_return(request_id, 0, json.dumps(sum(values)))
-
-view.js_bind("add", add)
-view.set_html("<script>add(20, 22).then(console.log)</script>")
-view.run()
+    view.js_bind("add", add)
+    view.set_html("<script>add(20, 22).then(console.log)</script>")
+    view.run()
 ```
 
 后台线程投递：
@@ -74,11 +73,12 @@ view.run()
 ```python
 import threading
 
-def worker():
-    view.dispatch(lambda: view.set_title("Updated on the UI thread"))
+with pyminiwebview.WebView() as view:
+    def worker():
+        view.dispatch(lambda: view.set_title("Updated on the UI thread"))
 
-threading.Thread(target=worker).start()
-view.run()
+    threading.Thread(target=worker).start()
+    view.run()
 ```
 
 ### 构造函数
@@ -107,9 +107,16 @@ WebView(
 - `user_data_folder`：显式指定 WebView2 用户数据目录。默认使用 `%LOCALAPPDATA%\<app_name>`，不再根据 `python.exe` 推导。
 - `clipboard_permission`：`"default"`（默认，由 WebView2 询问用户）、`"allow"` 或 `"deny"`，控制剪贴板读取权限请求。
 
-方法：`configure_app_mode(...)`、`notify_parent_position()`、`js_bind(name, fn)`、`js_eval(js)`、`js_init(js)`、`js_return(id, status, result)`、`js_unbind(name)`、`navigate(url)`、`set_html(html)`、`set_title(title)`、`set_size(width, height, hints=0)`、`set_focus()`、`get_native_handle(kind)`、`run(hwnd=0, haccel=0)`、`terminate()`、`dispatch(fn)`。
+方法：`close()`、`configure_app_mode(...)`、`notify_parent_position()`、`js_bind(name, fn)`、`js_eval(js)`、`js_init(js)`、`js_return(id, status, result)`、`js_unbind(name)`、`navigate(url)`、`set_html(html)`、`set_title(title)`、`set_size(width, height, hints=0)`、`set_focus()`、`get_native_handle(kind)`、`run(hwnd=0, haccel=0)`、`terminate()`、`dispatch(fn)`。
 
 JS 绑定回调签名为 `fn(request_id, request_json)`；第二个参数是 JSON 数组字符串，回调返回值不会被隐式发送，需显式调用 `js_return`。
+
+### 生命周期
+
+- `close()` 幂等，必须在创建实例的 UI 线程调用；它销毁原生资源、清除 JS 绑定，并**取消而非执行**尚未运行的 dispatch 回调。支持 `with WebView(...) as view:`，`__exit__` 会调用 `close()`。
+- 类型支持 GC 遍历胶囊内的绑定 callable 和待处理 dispatch callable，因此 callback 闭包再次引用 view 时也能回收。GC 兜底与 `close()` 一样不执行排队用户代码。
+- 若兜底析构发生在非 UI 线程，原生资源会投递到创建线程的消息队列销毁；需要该线程继续运行或泵送消息。显式 `close()` 仍是推荐做法。
+- 嵌入宿主应在窗口显示后按需调用 `set_focus()`；构造阶段不再主动 `MoveFocus`，避免初始化时序竞态。
 
 ### 桌面应用模式
 
@@ -125,7 +132,7 @@ view.configure_app_mode(
 
 - `disable_browser_accelerators`：通过 `ICoreWebView2Settings3` 禁用浏览器加速键，防止 F5/Ctrl+R 刷新应用界面和 Ctrl+F 打开查找栏；应用自己的加速键通过 `run(hwnd, haccel)` 的 `HACCEL` 处理。接口查询或设置失败会抛出带 HRESULT 的 `RuntimeError`。
 - `disable_nc_region_support`：通过 `ICoreWebView2Settings9` 显式关闭非客户区支持，避免 CSS `app-region` 生成的进程内子窗吞掉宿主 `WM_NCHITTEST` 边缘命中。运行时过旧而返回 `E_NOINTERFACE` 时表示该功能本来就不存在，会安全跳过；其他失败抛出 `RuntimeError`。
-- `redirect_new_window_to_system_browser`：用 `NewWindowRequested` 将 `window.open` 等请求转到系统默认浏览器，并标记请求已处理；重复配置不会重复注册事件。
+- `redirect_new_window_to_system_browser`：用 `NewWindowRequested` 将 `window.open` 等请求转到系统默认浏览器，并标记请求已处理；仅允许 `http`/`https`，其他协议直接拦截，`ShellExecuteW` 失败会由 COM 回调返回错误；重复配置不会重复注册事件。
 
 上述桌面应用策略参考 [Wails](https://github.com/wailsapp/wails) 实践，仅使用 WebView2 公共 API。宿主窗口收到 `WM_MOVE` 时调用 `view.notify_parent_position()`，通过 `NotifyParentWindowPositionChanged` 防止 `select` 下拉、日期选择器等页面原生弹层按旧坐标漂移。
 
@@ -201,7 +208,11 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - `run()` 期间 `threading.Timer` 能执行，且 `dispatch` 在 UI 线程运行。
 - 通过 `CreateWindowExW` 创建宿主窗口并验证 autosize。
 - `configure_app_mode()` 的默认配置与重复调用，以及 `notify_parent_position()`。
+- 幂等 `close()`、上下文管理器、绑定引用环回收、非 UI 线程 GC 后的 UI 原生收尾。
+- 排队 dispatch 在 close/析构时取消且释放引用，反复创建销毁和 dispatch/terminate/close 并发压力。
 - 非法参数抛出 Python 异常，64 位 `HWND` 参数解析。
+
+GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.11、3.12、3.13 和 3.14，逐版本执行真实 WebView2 创建、配置、位置通知和关闭。
 
 ## 验证
 
@@ -213,6 +224,14 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - 打开 `select` 弹层并拖动窗口若干次，再次打开时弹层跟随宿主位置，不发生坐标漂移。
 
 ## CHANGELOG
+
+### 0.1.2
+
+- 新增幂等 `close()` 和上下文管理器；close 与兜底析构均取消排队用户回调。
+- 支持绑定/排队 callable 的 GC 遍历，修复 callback 与 WebView 的引用环泄漏；非 UI 析构延迟原生销毁到 UI 线程。
+- 增加生命周期压力测试、宿主先销毁覆盖和 CPython 3.9–3.14 abi3 真实创建矩阵。
+- 外部新窗口仅允许 `http`/`https`，并检查 `ShellExecuteW` 返回值。
+- 移除构造阶段的主动 `MoveFocus`，由宿主显示后调用 `set_focus()`，避免初始化焦点竞态。
 
 ### 0.1.1
 

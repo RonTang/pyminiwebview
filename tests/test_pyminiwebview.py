@@ -3,6 +3,7 @@ import gc
 import json
 import sys
 import threading
+import time
 from ctypes import wintypes
 
 import pytest
@@ -13,6 +14,34 @@ if sys.platform != "win32":
 import pyminiwebview
 
 
+def window_exists(hwnd):
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.IsWindow.restype = wintypes.BOOL
+    return bool(user32.IsWindow(hwnd))
+
+
+def pump_until_closed(hwnd):
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.PeekMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+        wintypes.UINT, wintypes.UINT, wintypes.UINT,
+    ]
+    user32.PeekMessageW.restype = wintypes.BOOL
+    user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DispatchMessageW.restype = ctypes.c_ssize_t
+    deadline = time.monotonic() + 5
+    message = wintypes.MSG()
+    while window_exists(hwnd) and time.monotonic() < deadline:
+        if user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
+            user32.TranslateMessage(ctypes.byref(message))
+            user32.DispatchMessageW(ctypes.byref(message))
+        else:
+            time.sleep(0.01)
+    assert not window_exists(hwnd)
+
+
 @pytest.fixture
 def webview(tmp_path):
     instance = pyminiwebview.WebView(
@@ -21,6 +50,7 @@ def webview(tmp_path):
         user_data_folder=str(tmp_path / "webview-data"),
     )
     yield instance
+    instance.close()
     del instance
     gc.collect()
 
@@ -95,7 +125,9 @@ def test_run_releases_gil_and_dispatch_uses_ui_thread(webview):
     assert dispatch_thread == [ui_thread]
 
 
-def test_queued_dispatch_releases_callable_on_destruction(tmp_path):
+@pytest.mark.parametrize("explicit_close", [False, True])
+def test_queued_dispatch_is_canceled_and_releases_callable(
+        tmp_path, explicit_close):
     calls = []
 
     def callback():
@@ -107,10 +139,118 @@ def test_queued_dispatch_releases_callable_on_destruction(tmp_path):
     baseline = sys.getrefcount(callback)
     instance.dispatch(callback)
     assert sys.getrefcount(callback) == baseline + 1
+    if explicit_close:
+        instance.close()
     del instance
     gc.collect()
-    assert calls == ["called"]
+    assert calls == []
     assert sys.getrefcount(callback) == baseline
+
+
+def test_close_is_idempotent_and_context_manager_closes(tmp_path):
+    with pyminiwebview.WebView(
+            user_data_folder=str(tmp_path / "webview-data")) as instance:
+        hwnd = instance.get_native_handle(
+            pyminiwebview.NATIVE_HANDLE_KIND_UI_WINDOW
+        )
+        instance.close()
+        instance.close()
+        assert not window_exists(hwnd)
+        with pytest.raises(RuntimeError):
+            instance.set_html("closed")
+    assert not window_exists(hwnd)
+
+
+def test_binding_cycle_is_collected_and_destroys_native_window(tmp_path):
+    instance = pyminiwebview.WebView(
+        user_data_folder=str(tmp_path / "webview-data")
+    )
+    hwnd = instance.get_native_handle(pyminiwebview.NATIVE_HANDLE_KIND_UI_WINDOW)
+
+    def callback(request_id, request, view=instance):
+        view.js_return(request_id, 0, "null")
+
+    instance.js_bind("cycle", callback)
+    del callback
+    del instance
+    gc.collect()
+    assert not window_exists(hwnd)
+
+
+def test_binding_cycle_collected_off_ui_finalizes_on_ui_thread(tmp_path):
+    instance = pyminiwebview.WebView(
+        user_data_folder=str(tmp_path / "webview-data")
+    )
+    hwnd = instance.get_native_handle(pyminiwebview.NATIVE_HANDLE_KIND_UI_WINDOW)
+
+    def callback(request_id, request, view=instance):
+        view.js_return(request_id, 0, "null")
+
+    instance.js_bind("cycle", callback)
+    holder = [instance]
+    del callback
+    del instance
+
+    def collect_off_ui():
+        holder.clear()
+        gc.collect()
+
+    thread = threading.Thread(target=collect_off_ui)
+    thread.start()
+    thread.join()
+    pump_until_closed(hwnd)
+
+
+def test_repeated_cycles_and_canceled_dispatch(tmp_path):
+    for index in range(12):
+        calls = []
+        instance = pyminiwebview.WebView(
+            user_data_folder=str(tmp_path / f"webview-data-{index}")
+        )
+
+        def callback(request_id, request, view=instance):
+            view.js_return(request_id, 0, "null")
+
+        def queued(view=instance):
+            calls.append(view)
+
+        instance.js_bind("cycle", callback)
+        instance.dispatch(queued)
+        if index % 2:
+            instance.close()
+        del queued
+        del callback
+        del instance
+        gc.collect()
+        assert calls == []
+
+
+def test_dispatch_terminate_and_close_are_synchronized(tmp_path):
+    for index in range(8):
+        instance = pyminiwebview.WebView(
+            user_data_folder=str(tmp_path / f"webview-data-{index}")
+        )
+        errors = []
+
+        def worker(view=instance):
+            try:
+                for dispatch_index in range(100):
+                    if dispatch_index == 10:
+                        view.terminate()
+                        time.sleep(0.001)
+                    view.dispatch(lambda: None)
+            except RuntimeError as error:
+                if "closed" not in str(error):
+                    errors.append(error)
+            except BaseException as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        instance.run()
+        instance.close()
+        thread.join()
+        assert not errors
 
 
 def test_configure_app_mode_smoke(webview):
@@ -253,9 +393,10 @@ def test_embedded_autosize_follows_createwindowex_host(tmp_path):
         assert resized_host_size != initial_host_size
         assert client_size(user32, widget) == resized_host_size
     finally:
-        if instance is not None:
-            del instance
-            gc.collect()
         if host:
             user32.DestroyWindow(host)
+        if instance is not None:
+            instance.close()
+            del instance
+            gc.collect()
         user32.UnregisterClassW(class_name, instance_handle)

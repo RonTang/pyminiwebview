@@ -549,6 +549,8 @@ document.addEventListener('DOMContentLoaded', () => {
             user32.DestroyWindow(self.hwnd)
         view = self.view
         self.view = None
+        if view:
+            view.close()
         del view
         gc.collect()
         if self.class_atom:

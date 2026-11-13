@@ -18,8 +18,9 @@ the three-API patch cap and synchronization procedure.
 ## Microsoft WebView2 SDK
 
 `vendor/WebView2.h` and `vendor/WebView2EnvironmentOptions.h` are the official
-headers from NuGet package `Microsoft.Web.WebView2 1.0.1150.38`, the version used
-by the upstream webview 0.12.0 build configuration.
+headers from NuGet package `Microsoft.Web.WebView2 1.0.2420.47`. The project
+upgraded from upstream webview 0.12.0's `1.0.1150.38` baseline to use the stable
+`ICoreWebView2Settings9` non-client region setting.
 
 License: BSD 3-Clause; see `licenses/Microsoft-WebView2-LICENSE.txt`.
 Original Microsoft copyright and license headers are retained.
