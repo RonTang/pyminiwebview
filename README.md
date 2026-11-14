@@ -171,21 +171,6 @@ view.configure_app_mode(
 
 上述桌面应用策略参考 [Wails](https://github.com/wailsapp/wails) 实践，仅使用 WebView2 公共 API。宿主窗口收到 `WM_MOVE` 时调用 `view.notify_parent_position()`，通过 `NotifyParentWindowPositionChanged` 防止 `select` 下拉、日期选择器等页面原生弹层按旧坐标漂移。
 
-## 相对 python-webview2 的修复与差异
-
-Python 扩展层完全重写，不复用原 `main.c`：
-
-1. `run()` 用 `Py_BEGIN_ALLOW_THREADS` / `Py_END_ALLOW_THREADS` 释放 GIL；JS 和 dispatch 回调成对使用 `PyGILState_Ensure` / `PyGILState_Release`。
-2. 每个绑定回调只有一个明确的强引用所有者；`js_unbind`、重复绑定失败和对象析构均正确释放。调用结果及参数元组均配对 `Py_DECREF`，Python 异常打印并清除。
-3. 检查 WebView 创建结果和原生 API 错误码，非法参数、无效状态及运行时失败转换为 Python 异常。
-4. `HWND` / `HACCEL` 使用 `"K"` 解析；原生句柄以 64 位整数返回。
-5. `tp_init` 成功返回 `0`，类型通过 `PyType_FromSpec` 创建。
-6. 用户数据目录可显式配置，默认改为 `%LOCALAPPDATA%\<app_name>`。
-7. 剪贴板读取默认 `"default"`，不再无条件允许。
-8. 删除破坏嵌入关系的 `set_fullscreen` 实现，窗口全屏交由宿主处理。
-9. 加固上游 `dispatch(fn)` 的线程与错误处理；销毁时清理尚未执行的投递，避免回调引用泄漏。
-10. 嵌入模式统一初始化 COM STA，焦点操作使用 `ICoreWebView2Controller::MoveFocus`，不再依赖 Chromium 内部窗口类名。
-
 ## 构建
 
 需要 MSVC（Visual Studio 2022 的“使用 C++ 的桌面开发”组件）和 Python 3.9+。在 **x64 Native Tools Command Prompt** 或已初始化 MSVC 环境的终端执行：
@@ -286,7 +271,6 @@ Win32 助手另需人工确认：打开对话框能选择已有文件、取消�
 ## 致谢与许可
 
 - [webview/webview](https://github.com/webview/webview)：MIT，版权 Serge Zaitsev / Steffen André Langnes。
-- [59de44955ebd/python-webview2](https://github.com/59de44955ebd/python-webview2)：MIT；本项目参考其功能设计，但 Python 绑定层为重写，当前引擎直接跟踪 webview 上游 tag。
 - Microsoft WebView2 SDK 官方头文件保留原始版权声明，BSD 3-Clause 许可证见 `licenses/Microsoft-WebView2-LICENSE.txt`。
 
 本项目采用根目录的 MIT License，Copyright (c) 2026 Ron Tang。第三方来源及改动说明见 `THIRD_PARTY_NOTICES.md`。
