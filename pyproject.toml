@@ -30,7 +30,7 @@ Homepage = "https://github.com/RonTang/pyminiwebview"
 Source = "https://github.com/RonTang/pyminiwebview"
 
 [tool.setuptools]
-packages = ["pyminiwebview_win32"]
+packages = ["pyminiwebview_win32", "pyminiwebview_helpers"]
 package-dir = {"" = "src"}
 include-package-data = false
 

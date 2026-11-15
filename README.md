@@ -12,7 +12,8 @@
 
 1. `pyminiwebview.WebView`：重写的 CPython Stable ABI 绑定层，负责参数检查、GIL、Python 引用生命周期和异常转换。
 2. `vendor/webview/`：vendored 的 webview C++ 引擎，负责 WebView2 COM 对象、消息窗口和事件循环；仅保留 `create_ex`、Win32 `run` 和 `dispatch` 三个 API 补丁。
-3. 应用或 GUI 框架：负责宿主窗口和完整窗口生命周期。
+3. `pyminiwebview_helpers`：纯 Python 的 Bridge 和安全 JS 调用助手；`pyminiwebview_win32`：可选的文件对话框与托盘能力。两者均无第三方运行时依赖。
+4. 应用或 GUI 框架：负责宿主窗口和完整窗口生命周期。
 
 本扩展只做 WebView2 内在操作。嵌入模式下，全屏、宿主窗口标题、窗口图标、菜单、快捷键、文件对话框、托盘、注册表等均由应用处理，可使用 `ctypes` 或 `pywin32`。因此没有沿用原项目通过 `SetParent` 拆出控件的 `set_fullscreen`；嵌入模式的 `set_title` 也不会修改宿主窗口。
 
@@ -55,31 +56,56 @@ with pyminiwebview.WebView(
 JavaScript 调用 Python：
 
 ```python
-import json
 import pyminiwebview
+from pyminiwebview_helpers import Bridge
 
 with pyminiwebview.WebView(app_name="binding-demo") as view:
-    def add(request_id, request):
-        values = json.loads(request)
-        view.js_return(request_id, 0, json.dumps(sum(values)))
+    bridge = Bridge(view)
 
-    view.js_bind("add", add)
+    @bridge.expose
+    def add(a, b):
+        return a + b
+
+    @bridge.expose("greet")
+    def hello(name):
+        return f"你好，{name}"
+
     view.set_html("<script>add(20, 22).then(console.log)</script>")
     view.run()
 ```
+
+`Bridge` 只注册同步函数，自动处理位置参数 JSON 和返回值。普通 Python 异常以包含异常类型和消息的 object 拒绝 JS Promise，并在 Python 日志中记录 traceback；NaN、Infinity 和不可序列化结果会被拒绝。WebView 生命周期仍由调用者管理。
 
 后台线程投递：
 
 ```python
 import threading
+from pyminiwebview_helpers import call_js
 
 with pyminiwebview.WebView() as view:
+    def update_page():
+        call_js(view, "app.setStatus", "完成")
+
     def worker():
-        view.dispatch(lambda: view.set_title("Updated on the UI thread"))
+        view.dispatch(update_page)
 
     threading.Thread(target=worker).start()
     view.run()
 ```
+
+`call_js(view, "setProgress", 60, "正在处理")` 使用严格 JSON 分别序列化参数，只允许标识符或 `app.setStatus` 这类点分隔路径。它是 fire-and-forget，不返回 JS 结果、不自动 dispatch；后台线程必须显式回到 UI 线程。
+
+## Examples
+
+[六个循序渐进的示例](examples/README.md)覆盖最小窗口、Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写。前三个提供真实启动／退出冒烟参数，其余示例给出人工验收路径。
+
+招牌示例运行命令：`python examples/05_frameless_app/app.py`。
+
+![无边框 pyminiwebview 应用的真实窗口截图](docs/assets/pyminiwebview-frameless.png)
+
+下面的真实窗口录屏展示最大化与还原、JS → Python → JS 调用和后台进度更新：
+
+![无边框示例的真实交互演示](docs/assets/pyminiwebview-frameless.gif)
 
 ### 构造函数
 
@@ -188,7 +214,7 @@ python -m pip install build
 python -m build --wheel
 ```
 
-`build_ext --inplace` 在源码根目录生成可直接导入的 `pyminiwebview.pyd`；`python -m build --wheel` 在 `dist/` 生成可分发的 abi3 wheel。wheel 已包含 pyd，无需另外复制 `vendor/` 头文件或 WebView2 SDK。
+`build_ext --inplace` 生成可直接导入的 `pyminiwebview.pyd`；`python -m build --wheel` 在 `dist/` 生成可分发的 abi3 wheel。wheel 包含 pyd、`pyminiwebview_win32` 和 `pyminiwebview_helpers`，无需另外复制 `vendor/` 头文件或 WebView2 SDK；examples、测试和演示素材不会打入 wheel。
 
 `setup.py` 同时设置 `py_limited_api=True`，`setup.cfg` 指定 `cp39` ABI 基线。GitHub Actions 使用 cibuildwheel 构建并测试 `win_amd64` 的 abi3 wheel；发布 GitHub Release 时通过 PyPI Trusted Publishing 发布。PyPI 项目需先配置对应仓库和工作流的 trusted publisher。
 
@@ -232,6 +258,10 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - 排队 dispatch 在 close/析构时取消且释放引用，反复创建销毁和 dispatch/terminate/close 并发压力。
 - 非法参数抛出 Python 异常，64 位 `HWND` 参数解析。
 - 文件对话框 flags、路径缓冲区、取消/错误语义，以及真实托盘创建、消息回调和清理。
+- Bridge 的 JSON 成功／错误路径、call_js 参数与函数名校验，以及真实 WebView2 双向调用和引用回收。
+- 前三个 examples 通过子进程真实启动、执行页面交互并正常清理退出。
+
+无边框示例的 PNG/GIF 来自真实应用窗口。需要重录时先原地构建扩展，再运行 `python tools/record_frameless_demo.py`；该开发脚本使用 Pillow、PyAutoGUI 和 pywin32，它们不是库的运行时依赖。
 
 GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.11、3.12、3.13 和 3.14，逐版本执行真实 WebView2 创建、配置、位置通知和关闭。
 
@@ -247,6 +277,13 @@ GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.
 Win32 助手另需人工确认：打开对话框能选择已有文件、取消返回 `None`；保存对话框允许新文件并提示覆盖；托盘左右键触发回调，`remove()` 后无图标残留。
 
 ## CHANGELOG
+
+### Unreleased
+
+- 新增六个循序渐进的 examples，覆盖最小窗口、Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写，并附学习索引和冒烟验证。
+- 新增纯 Python、零第三方运行时依赖的 `pyminiwebview_helpers`，提供同步函数 `Bridge` 和严格 JSON 的 fire-and-forget `call_js`。
+- 增加 Bridge/call_js 的真实 WebView2 与参数边界测试、示例启动／交互／退出测试，保持关闭和 GC 引用回收保证。
+- 新增基于真实无边框示例录制的 PNG、GIF 和开发用录制脚本，并接入 README；演示素材不进入 wheel。
 
 ### 0.1.2
 

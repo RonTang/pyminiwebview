@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pyminiwebview · Frameless showcase</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="window-shell">
+    <header class="titlebar" id="titlebar">
+      <div class="brand"><span class="brand-mark">P</span><span>PYMINIWEBVIEW</span><span class="version">SHOWCASE</span></div>
+      <div class="window-controls">
+        <button id="btn-min" class="window-button" title="最小化" aria-label="最小化">—</button>
+        <button id="btn-max" class="window-button" title="最大化" aria-label="最大化">□</button>
+        <button id="btn-close" class="window-button close" title="关闭" aria-label="关闭">×</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="hero">
+        <div>
+          <div class="eyebrow"><span class="live-dot"></span> NATIVE WINDOWS · WEBVIEW2</div>
+          <h1>轻量原生窗口，<br><span>清晰的 Python 边界。</span></h1>
+          <p>Stable ABI · 零第三方运行时依赖 · 纯 Python 助手</p>
+        </div>
+        <div class="hero-orbit" aria-hidden="true"><div class="orbit-core">Py</div><i></i><b>JS</b></div>
+      </section>
+
+      <section class="metrics" aria-label="确定性演示数据">
+        <article><span>本周构建</span><strong>24</strong><small>全部通过</small></article>
+        <article><span>Python 调用</span><strong id="total-value">128</strong><small>确定性演示数据</small></article>
+        <article><span>运行时依赖</span><strong>0</strong><small>仅标准库与 WebView2</small></article>
+      </section>
+
+      <div class="demo-grid">
+        <section class="panel bridge-panel">
+          <div class="panel-heading"><span class="panel-icon">01</span><div><h2>JavaScript ↔ Python</h2><p>Bridge 自动处理 JSON 与 Promise</p></div></div>
+          <div class="code-flow"><span>JS</span><i>→</i><span>Bridge</span><i>→</i><span>Python</span></div>
+          <p class="result" id="bridge-result" aria-live="polite">点击按钮，让 Python 校验这组演示数据。</p>
+          <button class="primary" id="bridge-button">校验演示数据 <span>↗</span></button>
+        </section>
+
+        <section class="panel sync-panel">
+          <div class="panel-heading"><span class="panel-icon purple">02</span><div><h2>后台任务</h2><p>threading + dispatch + call_js</p></div></div>
+          <div class="progress-label"><span id="sync-percent">0%</span><span>有限任务，可随时取消</span></div>
+          <div class="progress-track"><div id="sync-bar"></div></div>
+          <p class="result" id="sync-status" aria-live="polite">UI 保持响应，进度由 UI 线程更新。</p>
+          <div class="button-row"><button class="primary violet" id="sync-button">运行后台同步</button><button class="secondary" id="cancel-button">取消</button></div>
+        </section>
+      </div>
+
+      <footer><span><i class="status-dot"></i> WebView2 Runtime 已连接</span><span id="checked-at">演示时间 · 今天 14:30</span></footer>
+    </main>
+  </div>
+  <div class="resize-handle left" data-direction="l"></div><div class="resize-handle right" data-direction="r"></div>
+  <div class="resize-handle bottom" data-direction="b"></div><div class="resize-handle top-left" data-direction="tl"></div>
+  <div class="resize-handle top-right" data-direction="tr"></div><div class="resize-handle bottom-left" data-direction="bl"></div>
+  <div class="resize-handle bottom-right" data-direction="br"></div>
+  <script src="app.js"></script>
+</body>
+</html>
