@@ -8,3 +8,4 @@ graft patches
 graft src
 graft licenses
 recursive-include tests *.py
+global-exclude *.py[cod]

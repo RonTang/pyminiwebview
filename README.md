@@ -32,7 +32,7 @@ python -m pip install pyminiwebview
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.2-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.3-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将文件命名为 `pyminiwebview.pyd`，放到应用脚本同目录或 `sys.path` 包含的其他目录，然后执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 wheel 可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
@@ -301,7 +301,7 @@ Win32 助手另需人工确认：打开对话框能选择已有文件、取消�
 
 ## CHANGELOG
 
-### Unreleased
+### 0.1.3
 
 - 新增六个循序渐进的 examples，覆盖最小窗口、Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写，并附学习索引和冒烟验证。
 - 新增纯 Python、零第三方运行时依赖的 `pyminiwebview_helpers`，提供同步函数 `Bridge` 和严格 JSON 的 fire-and-forget `call_js`。

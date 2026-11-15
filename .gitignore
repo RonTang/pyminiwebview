@@ -10,6 +10,7 @@ build/
 dist/
 *.egg-info/
 wheelhouse/
+.release-tools-venv/
 .reference-python-webview2/
 .upstream-webview/
 .patch-baseline/
