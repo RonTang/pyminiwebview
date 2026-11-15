@@ -197,16 +197,18 @@ def test_close_cancels_tasks_unbinds_and_is_idempotent():
 def test_close_rejects_even_if_coroutine_suppresses_cancellation():
     view = FakeView()
     bridge = AsyncBridge(view)
+    started = threading.Event()
 
     @bridge.expose
     async def stubborn_but_returns():
+        started.set()
         try:
             await asyncio.sleep(60)
         except asyncio.CancelledError:
             return "ignored cancellation"
 
     view.bindings["stubborn_but_returns"]("id", "[]")
-    wait_until(lambda: len(bridge._tasks) == 1)
+    assert started.wait(2)
     bridge.close()
     _, status, result = decoded_returns(view)[0]
     assert status == 1 and result["error"]["type"] == "CancelledError"
@@ -215,9 +217,11 @@ def test_close_rejects_even_if_coroutine_suppresses_cancellation():
 def test_close_has_bounded_timeout_for_unkillable_coroutine():
     view = FakeView()
     bridge = AsyncBridge(view)
+    started = threading.Event()
 
     @bridge.expose
     async def ignores_cancellation():
+        started.set()
         while True:
             try:
                 await asyncio.sleep(0.01)
@@ -225,7 +229,7 @@ def test_close_has_bounded_timeout_for_unkillable_coroutine():
                 pass
 
     view.bindings["ignores_cancellation"]("id", "[]")
-    wait_until(lambda: len(bridge._tasks) == 1)
+    assert started.wait(2)
     with pytest.raises(TimeoutError):
         bridge.close(timeout=0.05)
     wait_until(lambda: not bridge._thread.is_alive())

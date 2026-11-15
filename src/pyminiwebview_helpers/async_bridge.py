@@ -40,7 +40,6 @@ class AsyncBridge:
         self._closed = False
         self._stopping = False
         self._tasks = {}
-        self._close_task = None
         self._loop = None
         self._ready = threading.Event()
         self._startup_errors = []
@@ -196,6 +195,9 @@ class AsyncBridge:
                 })
             else:
                 self._respond_raw(request_id, 0, response)
+        finally:
+            if self._stopping and not self._tasks:
+                self._loop.stop()
 
     def _respond(self, request_id, status, result):
         self._respond_raw(request_id, status, _dumps_json(result))
@@ -230,14 +232,8 @@ class AsyncBridge:
             return
         self._stopping = True
         self._cancel_tasks()
-        if self._tasks:
-            self._close_task = self._loop.create_task(self._finish_close())
-        else:
+        if not self._tasks:
             self._loop.stop()
-
-    async def _finish_close(self):
-        await asyncio.gather(*list(self._tasks), return_exceptions=True)
-        self._loop.stop()
 
     def close(self, timeout=5.0):
         """Cancel active calls, stop the event loop, and unbind all functions.
