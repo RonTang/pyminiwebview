@@ -125,7 +125,7 @@ with pyminiwebview.WebView() as view:
 
 ## Examples
 
-[七个循序渐进的示例](examples/README.md)覆盖最小窗口、同步／异步 Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写。01、02、03、07 提供真实启动／退出冒烟参数，其余示例给出人工验收路径。
+[七个循序渐进的示例](https://github.com/RonTang/pyminiwebview/blob/82136feb2a09c3aa2e1ae05c50336e43a4686a59/examples/README.md)覆盖最小窗口、同步／异步 Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写。01、02、03、07 提供真实启动／退出冒烟参数，其余示例给出人工验收路径。
 
 招牌示例运行命令：`python examples/05_frameless_app/app.py`。
 
