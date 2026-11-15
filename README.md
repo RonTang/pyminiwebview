@@ -23,7 +23,13 @@
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
 
-**注意：项目暂未上传 PyPI，`python -m pip install pyminiwebview` 目前不可用。** 请先从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后也可从 Releases 页面获取。未来发布到 PyPI 后可使用：
+**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** [`0.1.3` 已上传 TestPyPI](https://test.pypi.org/project/pyminiwebview/0.1.3/) 并完成安装测试，可用以下命令验证测试发布：
+
+```bash
+python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.3
+```
+
+TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可以从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后还可从 Releases 页面获取。未来发布到正式 PyPI 后可使用：
 
 ```bash
 python -m pip install pyminiwebview
