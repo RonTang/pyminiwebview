@@ -129,11 +129,11 @@ with pyminiwebview.WebView() as view:
 
 招牌示例运行命令：`python examples/05_frameless_app/app.py`。
 
-![无边框 pyminiwebview 应用的真实窗口截图](docs/assets/pyminiwebview-frameless.png)
+![无边框 pyminiwebview 应用的真实窗口截图](https://raw.githubusercontent.com/RonTang/pyminiwebview/332caae63112359247f91c16e743303ad024eea9/docs/assets/pyminiwebview-frameless.png)
 
 下面的真实窗口录屏展示最大化与还原、JS → Python → JS 调用和后台进度更新：
 
-![无边框示例的真实交互演示](docs/assets/pyminiwebview-frameless.gif)
+![无边框示例的真实交互演示](https://raw.githubusercontent.com/RonTang/pyminiwebview/332caae63112359247f91c16e743303ad024eea9/docs/assets/pyminiwebview-frameless.gif)
 
 ### 构造函数
 
