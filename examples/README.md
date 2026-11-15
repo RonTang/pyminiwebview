@@ -46,5 +46,5 @@ python examples/07_async_bridge.py --smoke-test
 - 04：宿主 `WM_CLOSE` 销毁窗口，`WM_DESTROY` 结束共享消息循环，随后关闭 WebView 并注销窗口类。
 - 05：标题栏关闭按钮走同样的宿主销毁路径；最大化只使用显示器工作区，不覆盖任务栏。
 - 06：窗口关闭按钮仅隐藏页面。真正退出请用托盘 **Exit** 或页面“退出应用”；`finally` 中幂等移除托盘并关闭 WebView。
-- 07：先关闭 AsyncBridge，再关闭 WebView。关闭会取消活动协程并停止事件循环；协程清理后应继续传播 `CancelledError`。
+- 07：先关闭 AsyncBridge，再关闭 WebView。关闭会取消活动协程并停止事件循环；协程清理后应继续传播 `CancelledError`。`asyncio.to_thread` 等 executor 中已经开始运行的阻塞函数不会被强杀，默认 executor 也不会由桥关闭；有严格退出要求时，应用需自行管理 executor、取消标志和阻塞函数的协作式退出。
 - 文件对话框取消返回 `None`，不会读取或写入文件；文本 I/O 和托盘退出策略均只存在于示例，不属于核心库。

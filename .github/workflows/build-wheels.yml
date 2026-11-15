@@ -25,7 +25,7 @@ jobs:
         env:
           CIBW_BUILD: cp39-win_amd64
           CIBW_TEST_REQUIRES: pytest
-          CIBW_TEST_COMMAND: python -m pytest {project}/tests
+          CIBW_TEST_COMMAND: python {project}/tools/test_installed_wheel.py
       - uses: actions/upload-artifact@v4
         with:
           name: pyminiwebview-wheel
@@ -48,6 +48,15 @@ jobs:
           architecture: x64
       - name: Install abi3 wheel
         run: python -m pip install --no-deps (Get-ChildItem wheelhouse\*.whl).FullName
+      - name: Verify installed helpers outside repository
+        run: |
+          $checkDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid().ToString()))
+          Push-Location $checkDir
+          try {
+            python -c "from pyminiwebview_helpers import AsyncBridge, Bridge, call_js; from pyminiwebview_win32 import TrayIcon, open_file_dialog, save_file_dialog; print('wheel helpers OK')"
+          } finally {
+            Pop-Location
+          }
       - name: Verify real WebView2 lifecycle
         run: >-
           python -c "import os, pyminiwebview; assert pyminiwebview.__version__ == '0.1.2'; view = pyminiwebview.WebView(user_data_folder=os.path.abspath('.webview-abi3-test')); view.configure_app_mode(); view.notify_parent_position(); view.close(); print(pyminiwebview.__version__)"

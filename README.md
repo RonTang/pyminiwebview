@@ -96,6 +96,8 @@ with pyminiwebview.WebView(app_name="async-demo") as view:
 
 `AsyncBridge.close()` 必须先于 WebView `close()`，上下文管理器会按此顺序清理。关闭时停止接收新调用、取消并等待活动任务、拒绝对应 Promise，然后解绑；`cancel_all()` 可只取消当前任务而不关闭桥。取消是协作式的，协程应在清理后继续传播 `CancelledError`。协程运行在事件循环线程，UI-only WebView 方法仍需 `view.dispatch`；阻塞调用应显式移入 executor，不能指望 `async def` 自动避免阻塞。
 
+**取消协程不等于终止 executor 中的阻塞工作。** 对 `asyncio.to_thread` 或默认 executor，`close()` 会取消协程的等待并拒绝 Promise，但不会等待、关闭默认 executor，也无法强杀已经在运行的阻塞函数。文件保存、网络等需要严格退出语义的任务，应由应用自行管理 executor 和 `threading.Event` 取消标志，让阻塞函数在合适的边界检查标志并结束；退出时的 executor `shutdown` 也由应用负责。等待不可取消的工作可能阻塞 UI，`close(timeout)` 不会替这类工作提供强制超时。
+
 后台线程投递：
 
 ```python
@@ -279,12 +281,12 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - 非法参数抛出 Python 异常，64 位 `HWND` 参数解析。
 - 文件对话框 flags、路径缓冲区、取消/错误语义，以及真实托盘创建、消息回调和清理。
 - Bridge 的 JSON 成功／错误路径、call_js 参数与函数名校验，以及真实 WebView2 双向调用和引用回收。
-- AsyncBridge 的并发、异常、取消、关闭超时和引用回收；1000 次并发调用、反复创建销毁，以及真实 WebView2 的 300 次混合结果压力测试。
+- AsyncBridge 的并发、异常、取消、关闭超时、启动失败回收、executor 关闭边界和引用回收；1000 次并发调用、反复创建销毁，以及真实 WebView2 的 300 次混合结果压力测试。
 - 01、02、03、07 通过子进程真实启动、执行页面交互并正常清理退出。
 
 无边框示例的 PNG/GIF 来自真实应用窗口。需要重录时先原地构建扩展，再运行 `python tools/record_frameless_demo.py`；该开发脚本使用 Pillow、PyAutoGUI 和 pywin32，它们不是库的运行时依赖。
 
-GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.11、3.12、3.13 和 3.14，逐版本执行真实 WebView2 创建、配置、位置通知和关闭。
+GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.11、3.12、3.13 和 3.14，逐版本从仓库外导入纯 Python 助手，并执行真实 WebView2 创建、配置、位置通知和关闭。build-wheel 阶段通过 `tools/test_installed_wheel.py` 将测试和示例复制到临时目录、清除 `PYTHONPATH` 后运行完整测试，避免源码树遮蔽 wheel 中缺失或错误的纯 Python 文件。
 
 ## 验证
 
@@ -303,8 +305,9 @@ Win32 助手另需人工确认：打开对话框能选择已有文件、取消�
 
 - 新增六个循序渐进的 examples，覆盖最小窗口、Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写，并附学习索引和冒烟验证。
 - 新增纯 Python、零第三方运行时依赖的 `pyminiwebview_helpers`，提供同步函数 `Bridge` 和严格 JSON 的 fire-and-forget `call_js`。
-- 新增 `AsyncBridge` 和 07 异步示例：单个可复用 asyncio 事件循环、并发任务、协作式取消、有界关闭和完整生命周期管理。
-- 增加 Bridge/call_js 的真实 WebView2 与参数边界测试、示例启动／交互／退出测试，保持关闭和 GC 引用回收保证；新增异步并发与压力测试。
+- 新增 `AsyncBridge` 和 07 异步示例：单个可复用 asyncio 事件循环、并发任务、协作式取消、有界关闭和完整生命周期管理；修复事件循环启动失败后的线程清理，并明确 executor 阻塞工作的关闭契约。
+- 增加 Bridge/call_js 的真实 WebView2 与参数边界测试、示例启动／交互／退出测试，保持关闭和 GC 引用回收保证；新增异步并发与压力测试，并在仓库外隔离验证 wheel 中的纯 Python 包。
+- 修复托盘显示窗口时前台激活被拒绝仍调用 `set_focus()` 的异常路径；06 示例和手动托盘测试仅在激活成功后移动焦点。
 - 新增基于真实无边框示例录制的 PNG、GIF 和开发用录制脚本，并接入 README；演示素材不进入 wheel。
 
 ### 0.1.2

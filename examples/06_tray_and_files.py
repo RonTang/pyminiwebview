@@ -184,8 +184,8 @@ class TrayTextApp:
 
     def show_window(self):
         user32.ShowWindow(self.hwnd, SW_SHOW)
-        user32.SetForegroundWindow(self.hwnd)
-        self.view.set_focus()
+        if user32.SetForegroundWindow(self.hwnd):
+            self.view.set_focus()
 
     def hide_window(self):
         user32.ShowWindow(self.hwnd, SW_HIDE)

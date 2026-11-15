@@ -1,3 +1,4 @@
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -37,3 +38,32 @@ def test_example_smoke_startup_interaction_and_clean_exit(example, marker):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert marker in result.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Win32")
+def test_tray_show_focuses_only_after_successful_activation(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "example06", ROOT / "examples" / "06_tray_and_files.py"
+    )
+    example06 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(example06)
+    app = example06.TrayTextApp.__new__(example06.TrayTextApp)
+    app.hwnd = 123
+    focus_calls = []
+
+    class View:
+        def set_focus(self):
+            focus_calls.append(True)
+
+    app.view = View()
+    monkeypatch.setattr(example06.user32, "ShowWindow", lambda *_args: True)
+    monkeypatch.setattr(
+        example06.user32, "SetForegroundWindow", lambda *_args: False
+    )
+    app.show_window()
+    assert focus_calls == []
+    monkeypatch.setattr(
+        example06.user32, "SetForegroundWindow", lambda *_args: True
+    )
+    app.show_window()
+    assert focus_calls == [True]

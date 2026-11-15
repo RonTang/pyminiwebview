@@ -29,8 +29,14 @@ class AsyncBridge:
     ``asyncio.CancelledError`` after performing cleanup. Standard JSON rules and
     the synchronous Bridge's error-object format apply. Only coroutine functions
     are supported; blocking calls still block the event loop unless the caller
-    explicitly moves them to an executor.
+    explicitly moves them to an executor. Closing the bridge cancels the
+    coroutine's wait for executor work, but cannot stop a blocking function that
+    is already running in a thread. It does not wait for or shut down the default
+    executor. Applications that require strict shutdown should own their
+    executor and cancellation event, and make the blocking function cooperate.
     """
+
+    _STARTUP_TIMEOUT = 5.0
 
     def __init__(self, view):
         self._view = view
@@ -49,9 +55,23 @@ class AsyncBridge:
             daemon=True,
         )
         self._thread.start()
-        self._ready.wait(timeout=5)
+        self._ready.wait(timeout=self._STARTUP_TIMEOUT)
         if not self._ready.is_set() or self._startup_errors:
-            raise RuntimeError("Could not start the AsyncBridge event loop")
+            with self._lock:
+                self._closed = True
+                self._stopping = True
+            if self._loop is not None:
+                try:
+                    self._loop.call_soon_threadsafe(self._loop.stop)
+                except RuntimeError:
+                    pass
+            self._thread.join(timeout=5)
+            startup_error = (
+                self._startup_errors[0] if self._startup_errors else None
+            )
+            raise RuntimeError(
+                "Could not start the AsyncBridge event loop"
+            ) from startup_error
 
     def __enter__(self):
         return self
@@ -63,7 +83,11 @@ class AsyncBridge:
         try:
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
+            with self._lock:
+                startup_cancelled = self._closed
             self._ready.set()
+            if startup_cancelled:
+                return
             self._loop.run_forever()
             self._loop.run_until_complete(self._loop.shutdown_asyncgens())
         except BaseException as error:
@@ -242,6 +266,12 @@ class AsyncBridge:
         method is idempotent. If cancellation does not finish within ``timeout``
         seconds, the loop is stopped forcibly and ``TimeoutError`` is raised;
         such coroutines are already outside the supported cancellation contract.
+
+        Cancelling a Task also cancels its wait for executor work, but Python
+        cannot stop blocking code already running in an executor thread. This
+        method neither waits for nor shuts down the default executor; strict
+        shutdown requires application-owned executors and cooperative blocking
+        functions.
         """
         if threading.get_ident() != self._owner_thread:
             raise RuntimeError("AsyncBridge.close() must run on the UI thread")

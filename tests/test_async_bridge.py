@@ -50,6 +50,48 @@ def fake_bridge():
     bridge.close()
 
 
+def test_startup_failure_reaps_thread(monkeypatch):
+    created_threads = []
+    original_start = threading.Thread.start
+
+    def record_start(thread):
+        created_threads.append(thread)
+        original_start(thread)
+
+    def fail_to_create_loop():
+        raise OSError("loop creation failed")
+
+    monkeypatch.setattr(threading.Thread, "start", record_start)
+    monkeypatch.setattr(asyncio, "new_event_loop", fail_to_create_loop)
+    with pytest.raises(RuntimeError, match="Could not start") as exc_info:
+        AsyncBridge(FakeView())
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert len(created_threads) == 1
+    assert not created_threads[0].is_alive()
+
+
+def test_startup_timeout_prevents_delayed_loop_from_running(monkeypatch):
+    created_threads = []
+    original_start = threading.Thread.start
+    original_new_event_loop = asyncio.new_event_loop
+
+    def record_start(thread):
+        created_threads.append(thread)
+        original_start(thread)
+
+    def delayed_event_loop():
+        time.sleep(0.1)
+        return original_new_event_loop()
+
+    monkeypatch.setattr(threading.Thread, "start", record_start)
+    monkeypatch.setattr(asyncio, "new_event_loop", delayed_event_loop)
+    monkeypatch.setattr(AsyncBridge, "_STARTUP_TIMEOUT", 0.01)
+    with pytest.raises(RuntimeError, match="Could not start"):
+        AsyncBridge(FakeView())
+    assert len(created_threads) == 1
+    assert not created_threads[0].is_alive()
+
+
 def test_registration_rejects_sync_functions_duplicates_and_closed(fake_bridge):
     view, bridge = fake_bridge
     with pytest.raises(TypeError, match="coroutine"):
@@ -192,6 +234,37 @@ def test_close_cancels_tasks_unbinds_and_is_idempotent():
     assert view.bindings == {}
     _, status, result = decoded_returns(view)[0]
     assert status == 1 and result["error"]["type"] == "CancelledError"
+
+
+def test_close_cancels_to_thread_wait_but_not_running_blocking_work():
+    view = FakeView()
+    bridge = AsyncBridge(view)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def blocking_work():
+        started.set()
+        release.wait(5)
+        finished.set()
+        return "finished"
+
+    @bridge.expose
+    async def work():
+        return await asyncio.to_thread(blocking_work)
+
+    try:
+        view.bindings["work"]("id", "[]")
+        assert started.wait(2)
+        bridge.close()
+        assert not bridge._thread.is_alive()
+        _, status, result = decoded_returns(view)[0]
+        assert status == 1 and result["error"]["type"] == "CancelledError"
+        assert not finished.is_set()
+    finally:
+        release.set()
+        bridge.close()
+    assert finished.wait(2)
 
 
 def test_close_rejects_even_if_coroutine_suppresses_cancellation():

@@ -85,8 +85,8 @@ class TrayApplication:
 
     def show_window(self):
         user32.ShowWindow(self.hwnd, SW_SHOW)
-        user32.SetForegroundWindow(self.hwnd)
-        self.view.set_focus()
+        if user32.SetForegroundWindow(self.hwnd):
+            self.view.set_focus()
 
     def toggle_window(self):
         if user32.IsWindowVisible(self.hwnd):
