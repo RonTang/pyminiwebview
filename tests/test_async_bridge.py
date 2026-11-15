@@ -479,9 +479,11 @@ def test_real_webview_cancel_all_rejects_promise(tmp_path):
         user_data_folder=str(tmp_path / "webview-data")
     )
     bridge = AsyncBridge(view)
+    started = threading.Event()
 
     @bridge.expose
     async def pending():
+        started.set()
         await asyncio.sleep(60)
 
     @bridge.expose
@@ -492,17 +494,24 @@ def test_real_webview_cancel_all_rejects_promise(tmp_path):
     view.set_html("""
       <script>pending().catch(error => finish(error));</script>
     """)
-    canceller = threading.Timer(0.1, bridge.cancel_all)
+    def cancel_when_started():
+        if started.wait(timeout=5):
+            bridge.cancel_all()
+
+    canceller = threading.Thread(
+        target=cancel_when_started, name="async-cancel-test", daemon=True
+    )
     watchdog = threading.Timer(10, view.terminate)
     canceller.start()
     watchdog.start()
     try:
         view.run()
     finally:
-        canceller.cancel()
+        canceller.join(timeout=1)
         watchdog.cancel()
         bridge.close()
         view.close()
+    assert not canceller.is_alive()
     assert received == [{
         "error": {"type": "CancelledError",
                   "message": "Async call was cancelled"}
