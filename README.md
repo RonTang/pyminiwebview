@@ -12,7 +12,7 @@
 
 1. `pyminiwebview.WebView`：重写的 CPython Stable ABI 绑定层，负责参数检查、GIL、Python 引用生命周期和异常转换。
 2. `vendor/webview/`：vendored 的 webview C++ 引擎，负责 WebView2 COM 对象、消息窗口和事件循环；仅保留 `create_ex`、Win32 `run` 和 `dispatch` 三个 API 补丁。
-3. `pyminiwebview_helpers`：纯 Python 的 Bridge 和安全 JS 调用助手；`pyminiwebview_win32`：可选的文件对话框与托盘能力。两者均无第三方运行时依赖。
+3. `pyminiwebview_helpers`：纯 Python 的同步／异步 Bridge 和安全 JS 调用助手；`pyminiwebview_win32`：可选的文件对话框与托盘能力。两者均无第三方运行时依赖。
 4. 应用或 GUI 框架：负责宿主窗口和完整窗口生命周期。
 
 本扩展只做 WebView2 内在操作。嵌入模式下，全屏、宿主窗口标题、窗口图标、菜单、快捷键、文件对话框、托盘、注册表等均由应用处理，可使用 `ctypes` 或 `pywin32`。因此没有沿用原项目通过 `SetParent` 拆出控件的 `set_fullscreen`；嵌入模式的 `set_title` 也不会修改宿主窗口。
@@ -76,6 +76,26 @@ with pyminiwebview.WebView(app_name="binding-demo") as view:
 
 `Bridge` 只注册同步函数，自动处理位置参数 JSON 和返回值。普通 Python 异常以包含异常类型和消息的 object 拒绝 JS Promise，并在 Python 日志中记录 traceback；NaN、Infinity 和不可序列化结果会被拒绝。WebView 生命周期仍由调用者管理。
 
+需要 `async def` 时使用独立的 `AsyncBridge`。每个实例复用一个后台 asyncio 事件循环，所有调用在该循环上并发执行，不为每次请求创建线程：
+
+```python
+import asyncio
+import pyminiwebview
+from pyminiwebview_helpers import AsyncBridge
+
+with pyminiwebview.WebView(app_name="async-demo") as view:
+    with AsyncBridge(view) as bridge:
+        @bridge.expose
+        async def load_data(value):
+            await asyncio.sleep(0.1)
+            return {"value": value}
+
+        view.set_html("<script>load_data(42).then(console.log)</script>")
+        view.run()
+```
+
+`AsyncBridge.close()` 必须先于 WebView `close()`，上下文管理器会按此顺序清理。关闭时停止接收新调用、取消并等待活动任务、拒绝对应 Promise，然后解绑；`cancel_all()` 可只取消当前任务而不关闭桥。取消是协作式的，协程应在清理后继续传播 `CancelledError`。协程运行在事件循环线程，UI-only WebView 方法仍需 `view.dispatch`；阻塞调用应显式移入 executor，不能指望 `async def` 自动避免阻塞。
+
 后台线程投递：
 
 ```python
@@ -97,7 +117,7 @@ with pyminiwebview.WebView() as view:
 
 ## Examples
 
-[六个循序渐进的示例](examples/README.md)覆盖最小窗口、Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写。前三个提供真实启动／退出冒烟参数，其余示例给出人工验收路径。
+[七个循序渐进的示例](examples/README.md)覆盖最小窗口、同步／异步 Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写。01、02、03、07 提供真实启动／退出冒烟参数，其余示例给出人工验收路径。
 
 招牌示例运行命令：`python examples/05_frameless_app/app.py`。
 
@@ -259,7 +279,8 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - 非法参数抛出 Python 异常，64 位 `HWND` 参数解析。
 - 文件对话框 flags、路径缓冲区、取消/错误语义，以及真实托盘创建、消息回调和清理。
 - Bridge 的 JSON 成功／错误路径、call_js 参数与函数名校验，以及真实 WebView2 双向调用和引用回收。
-- 前三个 examples 通过子进程真实启动、执行页面交互并正常清理退出。
+- AsyncBridge 的并发、异常、取消、关闭超时和引用回收；1000 次并发调用、反复创建销毁，以及真实 WebView2 的 300 次混合结果压力测试。
+- 01、02、03、07 通过子进程真实启动、执行页面交互并正常清理退出。
 
 无边框示例的 PNG/GIF 来自真实应用窗口。需要重录时先原地构建扩展，再运行 `python tools/record_frameless_demo.py`；该开发脚本使用 Pillow、PyAutoGUI 和 pywin32，它们不是库的运行时依赖。
 
@@ -282,7 +303,8 @@ Win32 助手另需人工确认：打开对话框能选择已有文件、取消�
 
 - 新增六个循序渐进的 examples，覆盖最小窗口、Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写，并附学习索引和冒烟验证。
 - 新增纯 Python、零第三方运行时依赖的 `pyminiwebview_helpers`，提供同步函数 `Bridge` 和严格 JSON 的 fire-and-forget `call_js`。
-- 增加 Bridge/call_js 的真实 WebView2 与参数边界测试、示例启动／交互／退出测试，保持关闭和 GC 引用回收保证。
+- 新增 `AsyncBridge` 和 07 异步示例：单个可复用 asyncio 事件循环、并发任务、协作式取消、有界关闭和完整生命周期管理。
+- 增加 Bridge/call_js 的真实 WebView2 与参数边界测试、示例启动／交互／退出测试，保持关闭和 GC 引用回收保证；新增异步并发与压力测试。
 - 新增基于真实无边框示例录制的 PNG、GIF 和开发用录制脚本，并接入 README；演示素材不进入 wheel。
 
 ### 0.1.2

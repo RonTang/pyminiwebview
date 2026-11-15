@@ -18,20 +18,23 @@
 | 04 Embed Host | 嵌入已有 Win32 `HWND` | `python examples/04_embed_host.py` | 页面随宿主缩放，移动时同步弹层位置 | 人工检查移动、缩放和关闭顺序 |
 | 05 Frameless | 自定义标题栏与完整招牌应用 | `python examples/05_frameless_app/app.py` | 拖动、缩放、最小化、最大化/还原、Bridge 和后台同步均可用 | 人工交互验收；PNG/GIF 来自此示例 |
 | 06 Tray & Files | 文件对话框、UTF-8 读写和托盘 | `python examples/06_tray_and_files.py` | 打开/保存文本，关闭时隐藏，托盘菜单可显示、隐藏和退出 | 人工检查对话框取消/成功、托盘和清理 |
+| 07 Async Bridge | `async def`、并发任务、取消和事件循环清理 | `python examples/07_async_bridge.py` | 三个不同延迟的任务并发完成，慢任务可取消，关闭后无事件循环残留 | 自动冒烟，真实执行并发调用 |
 
-前三个示例的开发验证命令分别为：
+01、02、03、07 的开发验证命令分别为：
 
 ```bash
 python examples/01_hello.py --smoke-test
 python examples/02_js_bridge.py --smoke-test
 python examples/03_background_task.py --smoke-test
+python examples/07_async_bridge.py --smoke-test
 ```
 
-这些参数只用于开发测试：程序必须运行真实 WebView 消息循环并成功清理；02 必须收到 JS 端结果，03 必须等到后台任务完成，否则以非零状态退出。
+这些参数只用于开发测试：程序必须运行真实 WebView 消息循环并成功清理；02 必须收到 JS 端结果，03 必须等到后台任务完成，07 必须完成三个真实并发调用，否则以非零状态退出。
 
 ## 能力索引
 
 - `Bridge`：02、05；06 也用它向页面返回文件操作结果。
+- `AsyncBridge`：07；单个事件循环并发执行 `async def`，支持 `cancel_all()` 和关闭时任务清理。
 - `view.dispatch` + `call_js`：03、05。后台线程不直接调用 `js_eval`。
 - Win32 嵌入与 `notify_parent_position`：04、05。
 - `configure_app_mode` 和无边框窗口技术：05。
@@ -43,4 +46,5 @@ python examples/03_background_task.py --smoke-test
 - 04：宿主 `WM_CLOSE` 销毁窗口，`WM_DESTROY` 结束共享消息循环，随后关闭 WebView 并注销窗口类。
 - 05：标题栏关闭按钮走同样的宿主销毁路径；最大化只使用显示器工作区，不覆盖任务栏。
 - 06：窗口关闭按钮仅隐藏页面。真正退出请用托盘 **Exit** 或页面“退出应用”；`finally` 中幂等移除托盘并关闭 WebView。
+- 07：先关闭 AsyncBridge，再关闭 WebView。关闭会取消活动协程并停止事件循环；协程清理后应继续传播 `CancelledError`。
 - 文件对话框取消返回 `None`，不会读取或写入文件；文本 I/O 和托盘退出策略均只存在于示例，不属于核心库。
