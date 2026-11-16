@@ -102,9 +102,15 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
         min_height=480,
         app_name="pyminiwebview-pytest-frameless",
         user_data_folder=str(tmp_path / "webview-data"),
-        on_maximize_change=maximized_states.append,
     )
     hwnd = window.hwnd
+
+    def finish_on_first_frame(maximized):
+        maximized_states.append(maximized)
+        window.view.terminate()
+
+    window.on_maximize_change = finish_on_first_frame
+
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.IsWindow.argtypes = [wintypes.HWND]
     user32.IsWindow.restype = wintypes.BOOL
@@ -123,12 +129,7 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
             "__window_ready",
         } <= set(window.bridge._names)
         window.view.set_html("<h1>Frameless helper</h1>")
-        reveal_watchdog = threading.Timer(1, window.view.terminate)
-        reveal_watchdog.start()
-        try:
-            window.run()
-        finally:
-            reveal_watchdog.cancel()
+        window.run()
         assert window.ready
         assert user32.IsWindowVisible(hwnd)
         assert maximized_states == [False]
