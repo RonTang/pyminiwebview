@@ -439,9 +439,9 @@ class FramelessWindow:
         self.view.js_init(
             """
             document.addEventListener('DOMContentLoaded', () => {
-              requestAnimationFrame(() => requestAnimationFrame(() => {
+              requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => {
                 __window_ready();
-              }));
+              })));
             });
             """
         )

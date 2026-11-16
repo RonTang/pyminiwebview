@@ -135,7 +135,7 @@ public:
       return E_OUTOFMEMORY;
     }
     HRESULT result = sender->ExecuteScript(
-        L"requestAnimationFrame(() => requestAnimationFrame(() => {}));",
+        L"requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => {})));",
         handler);
     handler->Release();
     if (FAILED(result)) {
