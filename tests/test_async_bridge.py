@@ -140,6 +140,18 @@ def test_async_arguments_chinese_and_event_loop_thread(fake_bridge):
     wait_until(lambda: len(view.returns) == 1)
     assert decoded_returns(view)[0][2] == "你好，世界！"
     assert thread_ids == {bridge._thread.ident}
+
+
+def test_expose_accepts_coroutine_with_keyword_name(fake_bridge):
+    view, bridge = fake_bridge
+
+    async def load():
+        return 42
+
+    assert bridge.expose(load, name="load_data") is load
+    view.bindings["load_data"]("id", "[]")
+    wait_until(lambda: len(view.returns) == 1)
+    assert decoded_returns(view) == [("id", 0, 42)]
     assert bridge._thread.ident != threading.get_ident()
 
 

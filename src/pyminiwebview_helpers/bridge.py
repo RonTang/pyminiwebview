@@ -39,9 +39,10 @@ class Bridge:
     def expose(self, function_or_name=None, *, name=None):
         """Register a synchronous function and return it unchanged.
 
-        Use as ``@bridge.expose``, ``@bridge.expose("javascriptName")``, or
-        ``@bridge.expose(name="javascriptName")``. With no explicit name, the
-        Python function's ``__name__`` is used. JavaScript arguments are decoded
+        Use as ``@bridge.expose``, ``@bridge.expose("javascriptName")``,
+        ``@bridge.expose(name="javascriptName")``, or
+        ``bridge.expose(function, name="javascriptName")``. With no explicit
+        name, the Python function's ``__name__`` is used. JavaScript arguments are decoded
         from a JSON array and passed positionally. Return values are encoded as
         standard JSON; NaN, infinity, and non-serializable values are rejected.
 
@@ -58,8 +59,10 @@ class Bridge:
         Promise. Async functions are not supported.
         """
         if name is not None:
-            if function_or_name is not None:
+            if isinstance(function_or_name, str):
                 raise TypeError("Specify the binding name only once")
+            if function_or_name is not None:
+                return self._register(function_or_name, name)
             return self._decorator(name)
         if isinstance(function_or_name, str):
             return self._decorator(function_or_name)

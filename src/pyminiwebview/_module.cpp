@@ -20,6 +20,174 @@
 #include <new>
 #include <string>
 
+constexpr UINT_PTR STARTUP_REVEAL_TIMER_ID = 0x504D5677;
+
+static void reveal_native_window(HWND window) {
+  if (window == nullptr || !IsWindow(window)) {
+    return;
+  }
+  KillTimer(window, STARTUP_REVEAL_TIMER_ID);
+  if (!IsWindowVisible(window)) {
+    ShowWindow(window, SW_SHOW);
+    UpdateWindow(window);
+  }
+}
+
+static void CALLBACK startup_reveal_timeout(HWND window, UINT message,
+                                            UINT_PTR timer_id,
+                                            DWORD elapsed_ms) {
+  (void)message;
+  (void)timer_id;
+  (void)elapsed_ms;
+  reveal_native_window(window);
+}
+
+class FirstPaintHandler final : public ICoreWebView2ExecuteScriptCompletedHandler {
+public:
+  explicit FirstPaintHandler(HWND window) : m_window(window) {}
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
+                                           void **object) override {
+    if (object == nullptr) {
+      return E_POINTER;
+    }
+    if (IsEqualIID(riid, IID_IUnknown) ||
+        IsEqualIID(riid, IID_ICoreWebView2ExecuteScriptCompletedHandler)) {
+      *object = static_cast<ICoreWebView2ExecuteScriptCompletedHandler *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *object = nullptr;
+    return E_NOINTERFACE;
+  }
+
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    return static_cast<ULONG>(InterlockedIncrement(&m_ref_count));
+  }
+
+  ULONG STDMETHODCALLTYPE Release() override {
+    ULONG count = static_cast<ULONG>(InterlockedDecrement(&m_ref_count));
+    if (count == 0) {
+      delete this;
+    }
+    return count;
+  }
+
+  HRESULT STDMETHODCALLTYPE Invoke(HRESULT error_code,
+                                   LPCWSTR result_object_as_json) override {
+    (void)error_code;
+    (void)result_object_as_json;
+    reveal_native_window(m_window);
+    return S_OK;
+  }
+
+private:
+  HWND m_window;
+  LONG m_ref_count = 1;
+};
+
+class DOMContentLoadedHandler final
+    : public ICoreWebView2DOMContentLoadedEventHandler {
+public:
+  explicit DOMContentLoadedHandler(HWND window) : m_window(window) {}
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
+                                           void **object) override {
+    if (object == nullptr) {
+      return E_POINTER;
+    }
+    if (IsEqualIID(riid, IID_IUnknown) ||
+        IsEqualIID(riid, IID_ICoreWebView2DOMContentLoadedEventHandler)) {
+      *object = static_cast<ICoreWebView2DOMContentLoadedEventHandler *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *object = nullptr;
+    return E_NOINTERFACE;
+  }
+
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    return static_cast<ULONG>(InterlockedIncrement(&m_ref_count));
+  }
+
+  ULONG STDMETHODCALLTYPE Release() override {
+    ULONG count = static_cast<ULONG>(InterlockedDecrement(&m_ref_count));
+    if (count == 0) {
+      delete this;
+    }
+    return count;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  Invoke(ICoreWebView2 *sender,
+         ICoreWebView2DOMContentLoadedEventArgs *args) override {
+    (void)args;
+    if (sender == nullptr) {
+      reveal_native_window(m_window);
+      return E_POINTER;
+    }
+    if (InterlockedCompareExchange(&m_invoked, 1, 0) != 0) {
+      return S_OK;
+    }
+    FirstPaintHandler *handler = new (std::nothrow) FirstPaintHandler(m_window);
+    if (handler == nullptr) {
+      reveal_native_window(m_window);
+      return E_OUTOFMEMORY;
+    }
+    HRESULT result = sender->ExecuteScript(
+        L"requestAnimationFrame(() => requestAnimationFrame(() => {}));",
+        handler);
+    handler->Release();
+    if (FAILED(result)) {
+      reveal_native_window(m_window);
+    }
+    return result;
+  }
+
+private:
+  HWND m_window;
+  LONG m_ref_count = 1;
+  LONG m_invoked = 0;
+};
+
+class StandaloneShowSuppressor {
+public:
+  explicit StandaloneShowSuppressor(bool enabled) {
+    if (enabled) {
+      m_hook = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr,
+                               callback, GetCurrentProcessId(),
+                               GetCurrentThreadId(), WINEVENT_INCONTEXT);
+    }
+  }
+
+  ~StandaloneShowSuppressor() {
+    if (m_hook != nullptr) {
+      UnhookWinEvent(m_hook);
+    }
+  }
+
+private:
+  static void CALLBACK callback(HWINEVENTHOOK hook, DWORD event, HWND window,
+                                LONG object_id, LONG child_id,
+                                DWORD event_thread, DWORD event_time) {
+    (void)hook;
+    (void)event;
+    (void)event_thread;
+    (void)event_time;
+    if (window == nullptr || object_id != OBJID_WINDOW || child_id != 0 ||
+        GetParent(window) != nullptr) {
+      return;
+    }
+    wchar_t class_name[16]{};
+    if (GetClassNameW(window, class_name, 16) > 0 &&
+        wcscmp(class_name, L"webview") == 0) {
+      ShowWindow(window, SW_HIDE);
+    }
+  }
+
+  HWINEVENTHOOK m_hook = nullptr;
+};
+
 class NewWindowRequestedHandler final
     : public ICoreWebView2NewWindowRequestedEventHandler {
 public:
@@ -105,6 +273,10 @@ typedef struct {
   NewWindowRequestedHandler *new_window_handler;
   EventRegistrationToken new_window_token;
   int new_window_registered;
+  DOMContentLoadedHandler *startup_handler;
+  EventRegistrationToken startup_token;
+  int startup_registered;
+  int content_requested;
   int embedded;
   int autosize;
   AutoSizeState *auto_size_state;
@@ -131,6 +303,9 @@ struct NativeFinalizer {
   NewWindowRequestedHandler *new_window_handler;
   EventRegistrationToken new_window_token;
   int new_window_registered;
+  DOMContentLoadedHandler *startup_handler;
+  EventRegistrationToken startup_token;
+  int startup_registered;
   AutoSizeState *auto_size_state;
   UINT_PTR subclass_id;
 };
@@ -258,6 +433,9 @@ static void detach_native(WebViewObject *self, NativeFinalizer *finalizer) {
   finalizer->new_window_handler = self->new_window_handler;
   finalizer->new_window_token = self->new_window_token;
   finalizer->new_window_registered = self->new_window_registered;
+  finalizer->startup_handler = self->startup_handler;
+  finalizer->startup_token = self->startup_token;
+  finalizer->startup_registered = self->startup_registered;
   finalizer->auto_size_state = self->auto_size_state;
   finalizer->subclass_id = reinterpret_cast<UINT_PTR>(self);
   self->webview = nullptr;
@@ -267,6 +445,8 @@ static void detach_native(WebViewObject *self, NativeFinalizer *finalizer) {
   self->icon = nullptr;
   self->new_window_handler = nullptr;
   self->new_window_registered = 0;
+  self->startup_handler = nullptr;
+  self->startup_registered = 0;
   self->auto_size_state = nullptr;
   self->autosize = 0;
 }
@@ -284,14 +464,25 @@ destroy_native_resources(NativeFinalizer *finalizer) {
     delete state;
     finalizer->auto_size_state = nullptr;
   }
-  if (finalizer->new_window_registered && finalizer->webview != nullptr) {
+  if ((finalizer->new_window_registered || finalizer->startup_registered) &&
+      finalizer->webview != nullptr) {
     void *handle = webview_get_native_handle(
         finalizer->webview, WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER);
     if (handle != nullptr) {
       auto *controller = static_cast<ICoreWebView2Controller *>(handle);
       ICoreWebView2 *core = nullptr;
       if (SUCCEEDED(controller->get_CoreWebView2(&core)) && core != nullptr) {
-        core->remove_NewWindowRequested(finalizer->new_window_token);
+        if (finalizer->new_window_registered) {
+          core->remove_NewWindowRequested(finalizer->new_window_token);
+        }
+        if (finalizer->startup_registered) {
+          ICoreWebView2_2 *core2 = nullptr;
+          if (SUCCEEDED(core->QueryInterface(IID_PPV_ARGS(&core2))) &&
+              core2 != nullptr) {
+            core2->remove_DOMContentLoaded(finalizer->startup_token);
+            core2->Release();
+          }
+        }
         core->Release();
       }
     }
@@ -299,6 +490,10 @@ destroy_native_resources(NativeFinalizer *finalizer) {
   if (finalizer->new_window_handler != nullptr) {
     finalizer->new_window_handler->Release();
     finalizer->new_window_handler = nullptr;
+  }
+  if (finalizer->startup_handler != nullptr) {
+    finalizer->startup_handler->Release();
+    finalizer->startup_handler = nullptr;
   }
   webview_error_t error = WEBVIEW_ERROR_OK;
   if (finalizer->webview != nullptr) {
@@ -425,6 +620,45 @@ static int set_background_color(WebViewObject *self, COLORREF color) {
                  static_cast<unsigned long>(result));
     return -1;
   }
+  return 0;
+}
+
+static int configure_startup_reveal(WebViewObject *self) {
+  void *handle = webview_get_native_handle(
+      self->webview, WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER);
+  if (handle == nullptr) {
+    PyErr_SetString(PyExc_RuntimeError, "WebView2 controller is unavailable");
+    return -1;
+  }
+  auto *controller = static_cast<ICoreWebView2Controller *>(handle);
+  ICoreWebView2 *core = nullptr;
+  HRESULT result = controller->get_CoreWebView2(&core);
+  if (FAILED(result) || core == nullptr) {
+    return set_webview2_error("get_CoreWebView2 for startup reveal", result);
+  }
+  ICoreWebView2_2 *core2 = nullptr;
+  result = core->QueryInterface(IID_PPV_ARGS(&core2));
+  core->Release();
+  if (FAILED(result) || core2 == nullptr) {
+    return set_webview2_error("ICoreWebView2_2 query for startup reveal", result);
+  }
+  DOMContentLoadedHandler *handler =
+      new (std::nothrow) DOMContentLoadedHandler(self->parent);
+  if (handler == nullptr) {
+    core2->Release();
+    PyErr_NoMemory();
+    return -1;
+  }
+  EventRegistrationToken token{};
+  result = core2->add_DOMContentLoaded(handler, &token);
+  core2->Release();
+  if (FAILED(result)) {
+    handler->Release();
+    return set_webview2_error("add_DOMContentLoaded for startup reveal", result);
+  }
+  self->startup_handler = handler;
+  self->startup_token = token;
+  self->startup_registered = 1;
   return 0;
 }
 
@@ -662,6 +896,7 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
   }
 
   try {
+    StandaloneShowSuppressor suppress_initial_show(parent == nullptr);
     self->webview = webview_create_ex(debug, parent, user_data_folder, app_name,
                                       permission);
   } catch (const std::bad_alloc &) {
@@ -718,6 +953,7 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
       PyErr_SetString(PyExc_RuntimeError, "WebView2 window is unavailable");
       goto error;
     }
+    ShowWindow(self->parent, SW_HIDE);
     if (title != nullptr &&
         check_webview_error(webview_set_title(self->webview, title),
                             "webview_set_title") < 0) {
@@ -731,12 +967,17 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
                             "webview_set_size") < 0) {
       goto error;
     }
+    if (configure_startup_reveal(self) < 0) {
+      goto error;
+    }
   }
 
-  if (url != nullptr &&
-      check_webview_error(webview_navigate(self->webview, url),
-                          "webview_navigate") < 0) {
-    goto error;
+  if (url != nullptr) {
+    if (check_webview_error(webview_navigate(self->webview, url),
+                            "webview_navigate") < 0) {
+      goto error;
+    }
+    self->content_requested = 1;
   }
   return 0;
 
@@ -748,15 +989,10 @@ error:
   }
   delete self->auto_size_state;
   self->auto_size_state = nullptr;
-  webview_t webview = self->webview;
-  self->webview = nullptr;
-  if (webview != nullptr) {
-    webview_destroy(webview);
-  }
-  if (self->icon != nullptr) {
-    DestroyIcon(self->icon);
-    self->icon = nullptr;
-  }
+  NativeFinalizer finalizer{};
+  detach_native(self, &finalizer);
+  destroy_native_resources(&finalizer);
+  Py_XDECREF(finalizer.bindings);
   return -1;
 }
 
@@ -852,6 +1088,14 @@ static PyObject *WebView_run(WebViewObject *self, PyObject *args) {
   }
   if (require_webview(self) < 0) {
     return nullptr;
+  }
+  if (!self->embedded && !IsWindowVisible(self->parent)) {
+    if (!self->content_requested || !self->startup_registered) {
+      reveal_native_window(self->parent);
+    } else if (SetTimer(self->parent, STARTUP_REVEAL_TIMER_ID, 10000,
+                        startup_reveal_timeout) == 0) {
+      reveal_native_window(self->parent);
+    }
   }
   webview_error_t error;
   // The message loop blocks for an arbitrary time and never needs the GIL.
@@ -1105,6 +1349,7 @@ static PyObject *WebView_navigate(WebViewObject *self, PyObject *args) {
                           "webview_navigate") < 0) {
     return nullptr;
   }
+  self->content_requested = 1;
   Py_RETURN_NONE;
 }
 
@@ -1118,6 +1363,7 @@ static PyObject *WebView_set_html(WebViewObject *self, PyObject *args) {
                           "webview_set_html") < 0) {
     return nullptr;
   }
+  self->content_requested = 1;
   Py_RETURN_NONE;
 }
 
@@ -1303,7 +1549,7 @@ PyMODINIT_FUNC PyInit_pyminiwebview(void) {
                    WEBVIEW_NATIVE_HANDLE_KIND_UI_WIDGET) < 0 ||
       add_constant(module, "NATIVE_HANDLE_KIND_BROWSER_CONTROLLER",
                    WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER) < 0 ||
-      PyModule_AddStringConstant(module, "__version__", "0.1.3") < 0) {
+      PyModule_AddStringConstant(module, "__version__", "0.1.4") < 0) {
     Py_DECREF(module);
     return nullptr;
   }

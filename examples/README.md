@@ -16,20 +16,21 @@
 | 02 JS Bridge | 同步 Python 函数、JSON 和 Promise 拒绝 | `python examples/02_js_bridge.py` | 加法、中文问候和除零错误都有页面反馈 | 自动冒烟，真实执行成功与拒绝分支 |
 | 03 Background | 后台线程、取消、`dispatch` 和 `call_js` | `python examples/03_background_task.py` | 有限任务更新进度，可取消、重启，关闭时回收线程 | 自动冒烟，等待任务实际完成 |
 | 04 Embed Host | 嵌入已有 Win32 `HWND` | `python examples/04_embed_host.py` | 页面随宿主缩放，移动时同步弹层位置 | 人工检查移动、缩放和关闭顺序 |
-| 05 Frameless | 自定义标题栏与完整招牌应用 | `python examples/05_frameless_app/app.py` | 拖动、缩放、最小化、最大化/还原、Bridge 和后台同步均可用 | 人工交互验收；PNG/GIF 来自此示例 |
+| 05 Frameless | `FramelessWindow`、自定义标题栏与完整招牌应用 | `python examples/05_frameless_app/app.py` | 拖动、缩放、最小化、最大化/还原、Bridge 和后台同步均可用 | 自动冒烟 + 人工交互验收；PNG/GIF 来自此示例 |
 | 06 Tray & Files | 文件对话框、UTF-8 读写和托盘 | `python examples/06_tray_and_files.py` | 打开/保存文本，关闭时隐藏，托盘菜单可显示、隐藏和退出 | 人工检查对话框取消/成功、托盘和清理 |
 | 07 Async Bridge | `async def`、并发任务、取消和事件循环清理 | `python examples/07_async_bridge.py` | 三个不同延迟的任务并发完成，慢任务可取消，关闭后无事件循环残留 | 自动冒烟，真实执行并发调用 |
 
-01、02、03、07 的开发验证命令分别为：
+01、02、03、05、07 的开发验证命令分别为：
 
 ```bash
 python examples/01_hello.py --smoke-test
 python examples/02_js_bridge.py --smoke-test
 python examples/03_background_task.py --smoke-test
+python examples/05_frameless_app/app.py --smoke-test
 python examples/07_async_bridge.py --smoke-test
 ```
 
-这些参数只用于开发测试：程序必须运行真实 WebView 消息循环并成功清理；02 必须收到 JS 端结果，03 必须等到后台任务完成，07 必须完成三个真实并发调用，否则以非零状态退出。
+这些参数只用于开发测试：程序必须运行真实 WebView 消息循环并成功清理；02 必须收到 JS 端结果，03 必须等到后台任务完成，05 必须显示无边框宿主并完成 Bridge 调用，07 必须完成三个真实并发调用，否则以非零状态退出。
 
 ## 能力索引
 
@@ -37,7 +38,7 @@ python examples/07_async_bridge.py --smoke-test
 - `AsyncBridge`：07；单个事件循环并发执行 `async def`，支持 `cancel_all()` 和关闭时任务清理。
 - `view.dispatch` + `call_js`：03、05。后台线程不直接调用 `js_eval`。
 - Win32 嵌入与 `notify_parent_position`：04、05。
-- `configure_app_mode` 和无边框窗口技术：05。
+- `FramelessWindow`、`configure_app_mode` 和无边框窗口控制：05；应用代码不需要 `ctypes`。
 - `open_file_dialog`、`save_file_dialog`、`TrayIcon`：06。
 
 ## 退出与清理

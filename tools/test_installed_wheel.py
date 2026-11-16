@@ -11,7 +11,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parent.parent
 IMPORT_CHECK = """
 from pyminiwebview_helpers import AsyncBridge, Bridge, call_js
-from pyminiwebview_win32 import TrayIcon, open_file_dialog, save_file_dialog
+from pyminiwebview_win32 import FramelessWindow, TrayIcon, open_file_dialog, save_file_dialog
 import pyminiwebview
 import pyminiwebview_helpers
 import pyminiwebview_win32

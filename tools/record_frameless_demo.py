@@ -23,7 +23,7 @@ import win32ui
 
 ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "examples" / "05_frameless_app" / "app.py"
-CLASS_NAME = "PyMiniWebViewFramelessExample"
+WINDOW_TITLE = "pyminiwebview · Frameless showcase"
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
 
 
@@ -43,7 +43,7 @@ def wait_for_window(process, timeout=15):
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError("Frameless example exited before recording")
-        hwnd = win32gui.FindWindow(CLASS_NAME, None)
+        hwnd = win32gui.FindWindow(None, WINDOW_TITLE)
         if hwnd and win32gui.IsWindowVisible(hwnd):
             return hwnd
         time.sleep(0.1)
@@ -191,7 +191,7 @@ def record(output_dir, seconds, fps):
         }
         print(json.dumps(metadata, indent=2))
     finally:
-        hwnd = win32gui.FindWindow(CLASS_NAME, None)
+        hwnd = win32gui.FindWindow(None, WINDOW_TITLE)
         if hwnd:
             win32gui.PostMessage(hwnd, 0x0010, 0, 0)
         try:

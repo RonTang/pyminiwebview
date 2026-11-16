@@ -1,5 +1,6 @@
 import ctypes
 import sys
+import threading
 from ctypes import wintypes
 
 import pytest
@@ -7,7 +8,12 @@ import pytest
 if sys.platform != "win32":
     pytest.skip("Win32 helpers only support Windows", allow_module_level=True)
 
-from pyminiwebview_win32 import TrayIcon, open_file_dialog, save_file_dialog
+from pyminiwebview_win32 import (
+    FramelessWindow,
+    TrayIcon,
+    open_file_dialog,
+    save_file_dialog,
+)
 from pyminiwebview_win32 import dialogs
 from pyminiwebview_win32 import tray
 
@@ -84,6 +90,61 @@ def test_file_dialog_distinguishes_cancel_and_error(monkeypatch):
     )
     with pytest.raises(OSError):
         open_file_dialog()
+
+
+def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
+    maximized_states = []
+    window = FramelessWindow(
+        title="pyminiwebview pytest frameless",
+        width=760,
+        height=540,
+        min_width=640,
+        min_height=480,
+        app_name="pyminiwebview-pytest-frameless",
+        user_data_folder=str(tmp_path / "webview-data"),
+        on_maximize_change=maximized_states.append,
+    )
+    hwnd = window.hwnd
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.IsWindow.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    watchdog = threading.Timer(10, window.view.terminate)
+    try:
+        assert user32.IsWindow(hwnd)
+        assert not user32.IsWindowVisible(hwnd)
+        assert {
+            "__window_minimize",
+            "__window_toggle_maximize",
+            "__window_close",
+            "__window_start_move",
+            "__window_start_resize",
+            "__window_ready",
+        } <= set(window.bridge._names)
+        window.view.set_html("<h1>Frameless helper</h1>")
+        reveal_watchdog = threading.Timer(1, window.view.terminate)
+        reveal_watchdog.start()
+        try:
+            window.run()
+        finally:
+            reveal_watchdog.cancel()
+        assert window.ready
+        assert user32.IsWindowVisible(hwnd)
+        assert maximized_states == [False]
+        assert window.start_resize("invalid") is False
+    finally:
+        watchdog.cancel()
+        window.close()
+    assert not user32.IsWindow(hwnd)
+    window.close()
+
+
+def test_frameless_window_validates_dimensions():
+    with pytest.raises(ValueError, match="positive"):
+        FramelessWindow(width=0)
+    with pytest.raises(ValueError, match="must not exceed"):
+        FramelessWindow(width=600, height=500, min_width=700)
 
 
 def test_tray_icon_receives_messages_and_removes_cleanly():

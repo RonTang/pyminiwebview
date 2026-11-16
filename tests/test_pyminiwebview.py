@@ -55,6 +55,42 @@ def webview(tmp_path):
     gc.collect()
 
 
+def test_standalone_reveals_first_frame_at_requested_size(tmp_path):
+    instance = pyminiwebview.WebView(
+        width=777,
+        height=555,
+        user_data_folder=str(tmp_path / "webview-data"),
+    )
+    hwnd = instance.get_native_handle(pyminiwebview.NATIVE_HANDLE_KIND_UI_WINDOW)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetClientRect.restype = wintypes.BOOL
+
+    def size():
+        rect = wintypes.RECT()
+        assert user32.GetClientRect(hwnd, ctypes.byref(rect))
+        return rect.right - rect.left, rect.bottom - rect.top
+
+    watchdog = threading.Timer(5, instance.terminate)
+    try:
+        assert not user32.IsWindowVisible(hwnd)
+        initial_size = size()
+        instance.set_html("<style>body{background:#0d1226}</style><h1>ready</h1>")
+        reveal_watchdog = threading.Timer(1, instance.terminate)
+        reveal_watchdog.start()
+        try:
+            instance.run()
+        finally:
+            reveal_watchdog.cancel()
+        assert user32.IsWindowVisible(hwnd)
+        assert size() == initial_size
+    finally:
+        watchdog.cancel()
+        instance.close()
+
+
 def test_bind_navigate_destroy_refcount_is_stable(webview):
     calls = []
 

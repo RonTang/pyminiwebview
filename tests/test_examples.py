@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
         ("01_hello.py", "startup and clean exit OK"),
         ("02_js_bridge.py", "success, Chinese and rejection OK"),
         ("03_background_task.py", "thread, dispatch and completion OK"),
+        ("05_frameless_app/app.py", "startup, bridge and clean exit OK"),
         ("07_async_bridge.py", "concurrent calls and clean shutdown OK"),
     ],
 )

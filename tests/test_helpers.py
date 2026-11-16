@@ -46,12 +46,20 @@ def test_expose_supports_no_args_multiple_args_and_chinese():
     def hello(name, punctuation):
         return f"你好，{name}{punctuation}"
 
+    manager = type("Manager", (), {"open_excel": lambda self: "opened"})()
+    returned = bridge.expose(lambda: manager.open_excel(), name="open_excel")
+
+    assert callable(returned)
     assert view.bindings["answer"]("id-1", "[]") is None
     assert decoded_return(view) == ("id-1", 0, 42)
 
     view.returns.clear()
     view.bindings["greet"]("id-2", json.dumps(["世界", "！"]))
     assert decoded_return(view) == ("id-2", 0, "你好，世界！")
+
+    view.returns.clear()
+    view.bindings["open_excel"]("id-3", "[]")
+    assert decoded_return(view) == ("id-3", 0, "opened")
 
 
 @pytest.mark.parametrize(

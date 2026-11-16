@@ -12,8 +12,8 @@
 
 1. `pyminiwebview.WebView`：重写的 CPython Stable ABI 绑定层，负责参数检查、GIL、Python 引用生命周期和异常转换。
 2. `vendor/webview/`：vendored 的 webview C++ 引擎，负责 WebView2 COM 对象、消息窗口和事件循环；仅保留 `create_ex`、Win32 `run` 和 `dispatch` 三个 API 补丁。
-3. `pyminiwebview_helpers`：纯 Python 的同步／异步 Bridge 和安全 JS 调用助手；`pyminiwebview_win32`：可选的文件对话框与托盘能力。两者均无第三方运行时依赖。
-4. 应用或 GUI 框架：负责宿主窗口和完整窗口生命周期。
+3. `pyminiwebview_helpers`：纯 Python 的同步／异步 Bridge 和安全 JS 调用助手；`pyminiwebview_win32`：可选的无边框窗口、文件对话框与托盘能力。两者均无第三方运行时依赖。
+4. 应用或 GUI 框架：负责业务与自定义宿主；使用 `FramelessWindow` 时，宿主窗口和完整生命周期由助手封装。
 
 本扩展只做 WebView2 内在操作。嵌入模式下，全屏、宿主窗口标题、窗口图标、菜单、快捷键、文件对话框、托盘、注册表等均由应用处理，可使用 `ctypes` 或 `pywin32`。因此没有沿用原项目通过 `SetParent` 拆出控件的 `set_fullscreen`；嵌入模式的 `set_title` 也不会修改宿主窗口。
 
@@ -23,10 +23,10 @@
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
 
-**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** [`0.1.3` 已上传 TestPyPI](https://test.pypi.org/project/pyminiwebview/0.1.3/) 并完成安装测试，可用以下命令验证测试发布：
+**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.4`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
 
 ```bash
-python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.3
+python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.4
 ```
 
 TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可以从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后还可从 Releases 页面获取。未来发布到正式 PyPI 后可使用：
@@ -38,7 +38,7 @@ python -m pip install pyminiwebview
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.3-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.4-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将文件命名为 `pyminiwebview.pyd`，放到应用脚本同目录或 `sys.path` 包含的其他目录，然后执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 wheel 可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
@@ -80,7 +80,7 @@ with pyminiwebview.WebView(app_name="binding-demo") as view:
     view.run()
 ```
 
-`Bridge` 只注册同步函数，自动处理位置参数 JSON 和返回值。普通 Python 异常以包含异常类型和消息的 object 拒绝 JS Promise，并在 Python 日志中记录 traceback；NaN、Infinity 和不可序列化结果会被拒绝。WebView 生命周期仍由调用者管理。
+`Bridge` 只注册同步函数，自动处理位置参数 JSON 和返回值。除装饰器外，也可直接注册已有 callable：`bridge.expose(lambda: manager.open_excel(view), name="open_excel")`；`AsyncBridge` 同样支持 `bridge.expose(coroutine_function, name="load_data")`。普通 Python 异常以包含异常类型和消息的 object 拒绝 JS Promise，并在 Python 日志中记录 traceback；NaN、Infinity 和不可序列化结果会被拒绝。WebView 生命周期仍由调用者管理。
 
 需要 `async def` 时使用独立的 `AsyncBridge`。每个实例复用一个后台 asyncio 事件循环，所有调用在该循环上并发执行，不为每次请求创建线程：
 
@@ -125,7 +125,7 @@ with pyminiwebview.WebView() as view:
 
 ## Examples
 
-[七个循序渐进的示例](https://github.com/RonTang/pyminiwebview/blob/82136feb2a09c3aa2e1ae05c50336e43a4686a59/examples/README.md)覆盖最小窗口、同步／异步 Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写。01、02、03、07 提供真实启动／退出冒烟参数，其余示例给出人工验收路径。
+[七个循序渐进的示例](https://github.com/RonTang/pyminiwebview/blob/82136feb2a09c3aa2e1ae05c50336e43a4686a59/examples/README.md)覆盖最小窗口、同步／异步 Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写。01、02、03、05、07 提供真实启动／退出冒烟参数，其余示例给出人工验收路径。
 
 招牌示例运行命令：`python examples/05_frameless_app/app.py`。
 
@@ -165,6 +165,8 @@ WebView(
 
 JS 绑定回调签名为 `fn(request_id, request_json)`；第二个参数是 JSON 数组字符串，回调返回值不会被隐式发送，需显式调用 `js_return`。
 
+独立窗口在构造期间保持隐藏，设置完请求的标题、尺寸和背景色后，等待首次 `DOMContentLoaded` 的两个动画帧再显示，避免先出现 640×480 空白窗再跳变。未加载内容时 `run()` 会直接显示；页面事件异常时有 10 秒兜底显示。该行为由项目自有绑定层实现，不修改 vendored 引擎。
+
 ### 生命周期
 
 - `close()` 幂等，必须在创建实例的 UI 线程调用；它销毁原生资源、清除 JS 绑定，并**取消而非执行**尚未运行的 dispatch 回调。支持 `with WebView(...) as view:`，`__exit__` 会调用 `close()`。
@@ -174,7 +176,36 @@ JS 绑定回调签名为 `fn(request_id, request_json)`；第二个参数是 JSO
 
 ### 可选 Win32 助手
 
-wheel 同时包含纯 Python、零第三方依赖的 `pyminiwebview_win32` 助手包，不扩大原生 WebView2 核心。文件对话框在 UI 线程调用；取消返回 `None`，`CommDlgExtendedError` 非零时抛出 `OSError`。保存对话框允许新文件，并提示覆盖已有文件。
+wheel 同时包含纯 Python、零第三方依赖的 `pyminiwebview_win32` 助手包，不扩大原生 WebView2 核心。
+
+`FramelessWindow` 封装无边框宿主、内嵌 WebView、同步 Bridge、首帧显示和资源清理，应用无需编写 `ctypes`：
+
+```python
+from pyminiwebview_win32 import FramelessWindow
+
+with FramelessWindow(
+    title="My App",
+    width=1100,
+    height=740,
+    min_width=720,
+    min_height=520,
+    app_name="my-app",
+    bgcolor=0x0026120D,
+) as window:
+    window.bridge.expose(lambda: "ready", name="get_status")
+    window.view.set_html("""
+      <button onclick="__window_minimize()">最小化</button>
+      <button onclick="__window_toggle_maximize()">最大化/还原</button>
+      <button onclick="__window_close()">关闭</button>
+    """)
+    window.run()
+```
+
+内置 JS 函数为 `__window_minimize()`、`__window_toggle_maximize()`、`__window_close()`、`__window_start_move()`、`__window_start_resize(direction)` 和自动首帧回调 `__window_ready()`。缩放方向支持 `l`、`r`、`t`、`b`、`tl`、`tr`、`bl`、`br`。页面无需调用 ready，库会在 DOM 就绪后的两个动画帧自动显示窗口。可选 `on_maximize_change` 回调用于更新自定义标题栏图标。
+
+`window.view` 提供完整嵌入式 `WebView`，`window.bridge` 用于注册业务函数；`FramelessWindow.close()` 幂等，并销毁宿主、关闭 WebView、注销窗口类和释放画刷。创建、运行和关闭都应在同一 UI 线程执行。完整的拖动、边缘缩放、后台任务示例见 `examples/05_frameless_app/app.py`。
+
+文件对话框在 UI 线程调用；取消返回 `None`，`CommDlgExtendedError` 非零时抛出 `OSError`。保存对话框允许新文件，并提示覆盖已有文件。
 
 ```python
 from pyminiwebview_win32 import open_file_dialog, save_file_dialog
@@ -278,6 +309,7 @@ python -m build --wheel
 pytest 在真实 WebView2 Runtime 中覆盖：
 
 - 1000 次绑定/解绑的回调引用计数稳定，以及导航、HTML 加载和销毁。
+- 独立窗口构造期隐藏、首帧显示和请求尺寸稳定；无边框助手的真实宿主、内置桥接、首帧和清理。
 - 实际 JS→Python 回调与 `js_return`。
 - `run()` 期间 `threading.Timer` 能执行，且 `dispatch` 在 UI 线程运行。
 - 通过 `CreateWindowExW` 创建宿主窗口并验证 autosize。
@@ -288,7 +320,7 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - 文件对话框 flags、路径缓冲区、取消/错误语义，以及真实托盘创建、消息回调和清理。
 - Bridge 的 JSON 成功／错误路径、call_js 参数与函数名校验，以及真实 WebView2 双向调用和引用回收。
 - AsyncBridge 的并发、异常、取消、关闭超时、启动失败回收、executor 关闭边界和引用回收；1000 次并发调用、反复创建销毁，以及真实 WebView2 的 300 次混合结果压力测试。
-- 01、02、03、07 通过子进程真实启动、执行页面交互并正常清理退出。
+- 01、02、03、05、07 通过子进程真实启动、执行页面交互并正常清理退出。
 
 无边框示例的 PNG/GIF 来自真实应用窗口。需要重录时先原地构建扩展，再运行 `python tools/record_frameless_demo.py`；该开发脚本使用 Pillow、PyAutoGUI 和 pywin32，它们不是库的运行时依赖。
 
@@ -306,6 +338,12 @@ GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.
 Win32 助手另需人工确认：打开对话框能选择已有文件、取消返回 `None`；保存对话框允许新文件并提示覆盖；托盘左右键触发回调，`remove()` 后无图标残留。
 
 ## CHANGELOG
+
+### 0.1.4
+
+- `Bridge` / `AsyncBridge` 支持 `expose(callable, name="javascriptName")` 直接注册已有函数和 lambda。
+- 独立原生窗口改为请求尺寸与首帧内容就绪后显示，消除构造期 640×480 空白窗跳变；仅修改项目自有绑定层。
+- 新增 `pyminiwebview_win32.FramelessWindow`，封装无边框宿主、窗口控制桥接、首帧显示和资源清理；05 示例不再包含 `ctypes` 样板，并加入真实冒烟测试。
 
 ### 0.1.3
 
