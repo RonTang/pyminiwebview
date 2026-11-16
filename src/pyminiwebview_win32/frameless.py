@@ -8,12 +8,19 @@ from pyminiwebview_helpers import Bridge
 _WM_DESTROY = 0x0002
 _WM_MOVE = 0x0003
 _WM_SIZE = 0x0005
+_WM_ACTIVATE = 0x0006
 _WM_CLOSE = 0x0010
 _WM_GETMINMAXINFO = 0x0024
 _WM_NCCALCSIZE = 0x0083
 _WM_NCHITTEST = 0x0084
 _WM_NCACTIVATE = 0x0086
+_WM_NCUAHDRAWCAPTION = 0x00AE
+_WM_NCUAHDRAWFRAME = 0x00AF
 _WM_NCLBUTTONDOWN = 0x00A1
+_WM_MOUSEMOVE = 0x0200
+_WM_LBUTTONUP = 0x0202
+_WM_CAPTURECHANGED = 0x0215
+_SIZE_MINIMIZED = 1
 _SW_MAXIMIZE = 3
 _SW_SHOW = 5
 _SW_MINIMIZE = 6
@@ -28,10 +35,15 @@ _SM_CXDOUBLECLK = 36
 _SM_CYDOUBLECLK = 37
 _SM_CXPADDEDBORDER = 92
 _SPI_GETWORKAREA = 48
+_DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+_DWMWA_NCRENDERING_POLICY = 2
 _DWMWA_WINDOW_CORNER_PREFERENCE = 33
 _DWMWA_BORDER_COLOR = 34
-_DWMWA_CAPTION_COLOR = 35
-_DWMWCP_ROUNDSMALL = 3
+_DWMWA_COLOR_NONE = 0xFFFFFFFE
+_DWMWA_COLOR_DEFAULT = 0xFFFFFFFF
+_DWMNCRP_DISABLED = 1
+_DWMNCRP_ENABLED = 2
+_DWMWCP_ROUND = 2
 _HTCLIENT = 1
 _HTCAPTION = 2
 _HTLEFT, _HTRIGHT, _HTTOP, _HTBOTTOM = 10, 11, 12, 15
@@ -69,6 +81,15 @@ class _MONITORINFO(ctypes.Structure):
         ("rcMonitor", wintypes.RECT),
         ("rcWork", wintypes.RECT),
         ("dwFlags", wintypes.DWORD),
+    ]
+
+
+class _MARGINS(ctypes.Structure):
+    _fields_ = [
+        ("cxLeftWidth", ctypes.c_int),
+        ("cxRightWidth", ctypes.c_int),
+        ("cyTopHeight", ctypes.c_int),
+        ("cyBottomHeight", ctypes.c_int),
     ]
 
 
@@ -127,6 +148,8 @@ _user32.SetWindowPos.argtypes = [
 _user32.SetWindowPos.restype = wintypes.BOOL
 _user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 _user32.GetWindowRect.restype = wintypes.BOOL
+_user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+_user32.GetClientRect.restype = wintypes.BOOL
 _user32.IsZoomed.argtypes = [wintypes.HWND]
 _user32.IsZoomed.restype = wintypes.BOOL
 _user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
@@ -141,6 +164,8 @@ _user32.GetDoubleClickTime.restype = wintypes.UINT
 _user32.GetCursorPos.argtypes = [ctypes.POINTER(_POINT)]
 _user32.GetCursorPos.restype = wintypes.BOOL
 _user32.ReleaseCapture.restype = wintypes.BOOL
+_user32.SetCapture.argtypes = [wintypes.HWND]
+_user32.SetCapture.restype = wintypes.HWND
 _user32.PostMessageW.argtypes = [
     wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
 ]
@@ -165,6 +190,10 @@ _dwmapi.DwmSetWindowAttribute.argtypes = [
     wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
 ]
 _dwmapi.DwmSetWindowAttribute.restype = wintypes.LONG
+_dwmapi.DwmExtendFrameIntoClientArea.argtypes = [
+    wintypes.HWND, ctypes.POINTER(_MARGINS),
+]
+_dwmapi.DwmExtendFrameIntoClientArea.restype = wintypes.LONG
 try:
     _user32.GetSystemMetricsForDpi.argtypes = [ctypes.c_int, wintypes.UINT]
     _user32.GetSystemMetricsForDpi.restype = ctypes.c_int
@@ -186,6 +215,12 @@ class FramelessWindow:
         app_name="pyminiwebview",
         debug=False,
         bgcolor=0xFFFFFF,
+        shadow=True,
+        dark_mode=False,
+        dwm_border=True,
+        dwm_border_color=None,
+        inner_border_width=1,
+        inner_border_color=None,
         user_data_folder=None,
         clipboard_permission="default",
         on_maximize_change=None,
@@ -194,9 +229,31 @@ class FramelessWindow:
             raise ValueError("Window dimensions must be positive")
         if min_width > width or min_height > height:
             raise ValueError("Minimum dimensions must not exceed initial dimensions")
+        if not isinstance(shadow, bool):
+            raise TypeError("shadow must be a bool")
+        if not isinstance(dark_mode, bool):
+            raise TypeError("dark_mode must be a bool")
+        if not isinstance(dwm_border, bool):
+            raise TypeError("dwm_border must be a bool")
+        if not isinstance(inner_border_width, int) or isinstance(
+            inner_border_width, bool
+        ):
+            raise TypeError("inner_border_width must be an integer")
+        if inner_border_width < 0:
+            raise ValueError("inner_border_width must not be negative")
+        for name, color in (
+            ("dwm_border_color", dwm_border_color),
+            ("inner_border_color", inner_border_color),
+        ):
+            if color is not None:
+                if not isinstance(color, int) or isinstance(color, bool):
+                    raise TypeError(f"{name} must be an integer COLORREF or None")
+                if not 0 <= color <= 0xFFFFFFFF:
+                    raise ValueError(f"{name} must fit in 32 bits")
         self.hwnd = None
         self.view = None
         self.bridge = None
+        self._widget = None
         self.ready = False
         self.on_maximize_change = on_maximize_change
         self._title = title
@@ -207,6 +264,12 @@ class FramelessWindow:
         self._app_name = app_name
         self._debug = debug
         self._bgcolor = bgcolor
+        self._shadow = shadow
+        self._dark_mode = dark_mode
+        self._dwm_border = dwm_border
+        self._dwm_border_color = dwm_border_color
+        self._inner_border_width = inner_border_width
+        self._inner_border_color = inner_border_color
         self._user_data_folder = user_data_folder
         self._clipboard_permission = clipboard_permission
         self._class_name = f"PyMiniWebViewFrameless_{id(self):x}"
@@ -216,6 +279,9 @@ class FramelessWindow:
         self._hinstance = _kernel32.GetModuleHandleW(None)
         self._move_serial = 0
         self._last_title_down = None
+        self._resize_direction = None
+        self._resize_origin = None
+        self._resize_bounds = None
         try:
             self._create()
         except BaseException:
@@ -242,13 +308,65 @@ class FramelessWindow:
             )
         return max(1, value - 1)
 
+    def _extend_dwm_frame(self):
+        width = int(self.ready and self._shadow and not _user32.IsZoomed(self.hwnd))
+        margins = _MARGINS(width, width, width, width)
+        _dwmapi.DwmExtendFrameIntoClientArea(self.hwnd, ctypes.byref(margins))
+
+    def _apply_dark_mode(self):
+        value = wintypes.BOOL(self._dark_mode)
+        _dwmapi.DwmSetWindowAttribute(
+            self.hwnd, _DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value), 4
+        )
+
+    def _apply_dwm_frame_policy(self):
+        policy = _DWMNCRP_ENABLED if self._shadow else _DWMNCRP_DISABLED
+        value = ctypes.c_int(policy)
+        _dwmapi.DwmSetWindowAttribute(
+            self.hwnd, _DWMWA_NCRENDERING_POLICY, ctypes.byref(value), 4
+        )
+
+    def _set_dwm_border_color(self, color):
+        value = wintypes.DWORD(color)
+        _dwmapi.DwmSetWindowAttribute(
+            self.hwnd, _DWMWA_BORDER_COLOR, ctypes.byref(value), 4
+        )
+
+    def _apply_dwm_border_color(self):
+        if not self._dwm_border:
+            color = _DWMWA_COLOR_NONE
+        elif self._dwm_border_color is not None:
+            color = self._dwm_border_color
+        else:
+            color = _DWMWA_COLOR_DEFAULT
+        self._set_dwm_border_color(color)
+
+    def _layout_webview(self):
+        if not self.hwnd or not self.view or not self._widget:
+            return
+        rect = wintypes.RECT()
+        if not _user32.GetClientRect(self.hwnd, ctypes.byref(rect)):
+            return
+        border = 0 if _user32.IsZoomed(self.hwnd) else self._inner_border_width
+        width = max(0, rect.right - rect.left - 2 * border)
+        height = max(0, rect.bottom - rect.top - 2 * border)
+        _user32.SetWindowPos(
+            self._widget, None, border, border, width, height,
+            _SWP_NOZORDER | _SWP_NOACTIVATE,
+        )
+
     def _create(self):
         ctypes.set_last_error(0)
         if not _user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
             error = ctypes.get_last_error()
             if error != _ERROR_ACCESS_DENIED:
                 raise ctypes.WinError(error)
-        self._background_brush = _gdi32.CreateSolidBrush(self._bgcolor)
+        host_color = (
+            self._inner_border_color
+            if self._inner_border_color is not None
+            else self._bgcolor
+        )
+        self._background_brush = _gdi32.CreateSolidBrush(host_color)
         if not self._background_brush:
             raise ctypes.WinError(ctypes.get_last_error())
         window_class = _WNDCLASSW()
@@ -279,20 +397,16 @@ class FramelessWindow:
         if not self.hwnd:
             raise ctypes.WinError(ctypes.get_last_error())
 
-        corner = ctypes.c_int(_DWMWCP_ROUNDSMALL)
-        color = ctypes.c_int(self._bgcolor)
+        corner = ctypes.c_int(_DWMWCP_ROUND)
         _dwmapi.DwmSetWindowAttribute(
             self.hwnd, _DWMWA_WINDOW_CORNER_PREFERENCE, ctypes.byref(corner), 4
         )
-        _dwmapi.DwmSetWindowAttribute(
-            self.hwnd, _DWMWA_BORDER_COLOR, ctypes.byref(color), 4
-        )
-        _dwmapi.DwmSetWindowAttribute(
-            self.hwnd, _DWMWA_CAPTION_COLOR, ctypes.byref(color), 4
-        )
+        self._apply_dark_mode()
+        self._apply_dwm_frame_policy()
+        self._apply_dwm_border_color()
         self.view = pyminiwebview.WebView(
             window=self.hwnd,
-            autosize=True,
+            autosize=False,
             width=self._width,
             height=self._height,
             debug=self._debug,
@@ -301,13 +415,16 @@ class FramelessWindow:
             user_data_folder=self._user_data_folder,
             clipboard_permission=self._clipboard_permission,
         )
-        padding = self._ring_padding()
+        self._widget = self.view.get_native_handle(
+            pyminiwebview.NATIVE_HANDLE_KIND_UI_WIDGET
+        )
         if not _user32.SetWindowPos(
             self.hwnd, None, 0, 0,
-            self._width + 2 * padding, self._height + padding,
+            self._width, self._height,
             _SWP_NOMOVE | _SWP_NOZORDER | _SWP_NOACTIVATE | _SWP_FRAMECHANGED,
         ):
             raise ctypes.WinError(ctypes.get_last_error())
+        self._layout_webview()
         self.bridge = Bridge(self.view)
         controls = {
             "__window_minimize": self.minimize,
@@ -335,9 +452,10 @@ class FramelessWindow:
             return False
         _user32.ShowWindow(self.hwnd, _SW_SHOW)
         _user32.UpdateWindow(self.hwnd)
+        self.ready = True
+        self._extend_dwm_frame()
         _user32.SetForegroundWindow(self.hwnd)
         self.view.set_focus()
-        self.ready = True
         self._notify_maximized_state()
         return True
 
@@ -402,7 +520,44 @@ class FramelessWindow:
             or _user32.IsZoomed(self.hwnd)
         ):
             return False
-        return self._post_nonclient_action(_HT_CODES[direction])
+        point = _POINT()
+        rect = wintypes.RECT()
+        if not _user32.GetCursorPos(ctypes.byref(point)):
+            return False
+        if not _user32.GetWindowRect(self.hwnd, ctypes.byref(rect)):
+            return False
+        self._resize_direction = direction
+        self._resize_origin = (point.x, point.y)
+        self._resize_bounds = (rect.left, rect.top, rect.right, rect.bottom)
+        _user32.ReleaseCapture()
+        _user32.SetCapture(self.hwnd)
+        return True
+
+    def _resize(self):
+        point = _POINT()
+        if not _user32.GetCursorPos(ctypes.byref(point)):
+            return
+        dx = point.x - self._resize_origin[0]
+        dy = point.y - self._resize_origin[1]
+        left, top, right, bottom = self._resize_bounds
+        direction = self._resize_direction
+        if "l" in direction:
+            left = min(left + dx, right - self._min_width)
+        if "r" in direction:
+            right = max(right + dx, left + self._min_width)
+        if "t" in direction:
+            top = min(top + dy, bottom - self._min_height)
+        if "b" in direction:
+            bottom = max(bottom + dy, top + self._min_height)
+        _user32.SetWindowPos(
+            self.hwnd, None, left, top, right - left, bottom - top,
+            _SWP_NOZORDER | _SWP_NOACTIVATE,
+        )
+
+    def _finish_resize(self):
+        self._resize_direction = None
+        self._resize_origin = None
+        self._resize_bounds = None
 
     def _notify_maximized_state(self):
         if self.ready and self.on_maximize_change is not None:
@@ -422,14 +577,15 @@ class FramelessWindow:
                     )
                     if _user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
                         params.rgrc[0] = info.rcWork
-                else:
-                    padding = self._ring_padding()
-                    params.rgrc[0].left += padding
-                    params.rgrc[0].right -= padding
-                    params.rgrc[0].bottom -= padding
             return 0
         if message == _WM_NCACTIVATE:
-            return 1
+            return _user32.DefWindowProcW(hwnd, message, wparam, -1)
+        if message in (_WM_NCUAHDRAWCAPTION, _WM_NCUAHDRAWFRAME):
+            return 0
+        if message == _WM_ACTIVATE:
+            self._extend_dwm_frame()
+            self._apply_dwm_border_color()
+            return _user32.DefWindowProcW(hwnd, message, wparam, lparam)
         if message == _WM_GETMINMAXINFO:
             info = ctypes.cast(lparam, ctypes.POINTER(_MINMAXINFO)).contents
             info.ptMinTrackSize = _POINT(self._min_width, self._min_height)
@@ -453,8 +609,13 @@ class FramelessWindow:
                 return _HTCLIENT
             padding = self._ring_padding()
             left = x - rect.left
+            top = y - rect.top
             right = rect.right - x
             bottom = rect.bottom - y
+            if left < padding and top < padding:
+                return _HTTOPLEFT
+            if right < padding and top < padding:
+                return _HTTOPRIGHT
             if left < padding and bottom < padding:
                 return _HTBOTTOMLEFT
             if right < padding and bottom < padding:
@@ -463,14 +624,29 @@ class FramelessWindow:
                 return _HTLEFT
             if right < padding:
                 return _HTRIGHT
+            if top < padding:
+                return _HTTOP
             if bottom < padding:
                 return _HTBOTTOM
             return _HTCLIENT
+        if message == _WM_MOUSEMOVE and self._resize_direction:
+            self._resize()
+            return 0
+        if message == _WM_LBUTTONUP and self._resize_direction:
+            self._finish_resize()
+            _user32.ReleaseCapture()
+            return 0
+        if message == _WM_CAPTURECHANGED:
+            self._finish_resize()
         if message == _WM_MOVE:
             self._move_serial += 1
             if self.view:
                 self.view.notify_parent_position()
         elif message == _WM_SIZE:
+            if wparam != _SIZE_MINIMIZED:
+                self._layout_webview()
+                self._apply_dwm_border_color()
+            self._extend_dwm_frame()
             self._notify_maximized_state()
         elif message == _WM_CLOSE:
             _user32.DestroyWindow(hwnd)
@@ -488,11 +664,15 @@ class FramelessWindow:
         self.view.run()
 
     def close(self):
+        if self._resize_direction:
+            self._finish_resize()
+            _user32.ReleaseCapture()
         if self.hwnd:
             _user32.DestroyWindow(self.hwnd)
         if self.view:
             self.view.close()
             self.view = None
+        self._widget = None
         self.bridge = None
         self.ready = False
         if self._class_atom:

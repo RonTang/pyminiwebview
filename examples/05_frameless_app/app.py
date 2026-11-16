@@ -111,6 +111,10 @@ def main():
         min_height=520,
         app_name="pyminiwebview-example-05",
         bgcolor=BG_COLOR,
+        shadow=True,
+        dark_mode=True,
+        dwm_border=False,
+        inner_border_width=0,
     ) as window:
         tasks.view = window.view
         window.on_maximize_change = lambda maximized: call_js(

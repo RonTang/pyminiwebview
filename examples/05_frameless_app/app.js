@@ -27,7 +27,21 @@ window.app = {
   }
 };
 
-byId('btn-min').addEventListener('click', () => __window_minimize());
+const windowButtons = [...document.querySelectorAll('.window-button')];
+function clearWindowButtonHover() {
+  windowButtons.forEach(button => button.classList.remove('hover'));
+}
+document.addEventListener('pointermove', event => {
+  const hovered = event.target.closest('.window-button');
+  windowButtons.forEach(button => button.classList.toggle('hover', button === hovered));
+});
+document.addEventListener('pointerleave', clearWindowButtonHover);
+window.addEventListener('blur', clearWindowButtonHover);
+
+byId('btn-min').addEventListener('click', () => {
+  clearWindowButtonHover();
+  __window_minimize();
+});
 byId('btn-max').addEventListener('click', () => __window_toggle_maximize());
 byId('btn-close').addEventListener('click', () => __window_close());
 byId('titlebar').addEventListener('mousedown', event => {
@@ -36,7 +50,10 @@ byId('titlebar').addEventListener('mousedown', event => {
 
 document.querySelectorAll('.resize-handle').forEach(handle => {
   handle.addEventListener('mousedown', event => {
-    if (event.button === 0) __window_start_resize(handle.dataset.direction);
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    __window_start_resize(handle.dataset.direction);
   });
 });
 

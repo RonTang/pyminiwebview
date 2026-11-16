@@ -23,10 +23,10 @@
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
 
-**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.4`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
+**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.5`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
 
 ```bash
-python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.4
+python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.5
 ```
 
 TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可以从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后还可从 Releases 页面获取。未来发布到正式 PyPI 后可使用：
@@ -38,7 +38,7 @@ python -m pip install pyminiwebview
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.4-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.5-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将文件命名为 `pyminiwebview.pyd`，放到应用脚本同目录或 `sys.path` 包含的其他目录，然后执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 wheel 可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
@@ -191,6 +191,12 @@ with FramelessWindow(
     min_height=520,
     app_name="my-app",
     bgcolor=0x0026120D,
+    shadow=True,
+    dark_mode=True,
+    dwm_border=True,
+    dwm_border_color=None,
+    inner_border_width=1,
+    inner_border_color=0x0026120D,
 ) as window:
     window.bridge.expose(lambda: "ready", name="get_status")
     window.view.set_html("""
@@ -202,6 +208,17 @@ with FramelessWindow(
 ```
 
 内置 JS 函数为 `__window_minimize()`、`__window_toggle_maximize()`、`__window_close()`、`__window_start_move()`、`__window_start_resize(direction)` 和自动首帧回调 `__window_ready()`。缩放方向支持 `l`、`r`、`t`、`b`、`tl`、`tr`、`bl`、`br`。页面无需调用 ready，库会在 DOM 就绪后的两个动画帧自动显示窗口。可选 `on_maximize_change` 回调用于更新自定义标题栏图标。
+
+阴影、深色模式、DWM 外框和宿主内边框相互独立：
+
+- `shadow=True`：启用系统 DWM 阴影；`False` 会禁用非客户区渲染并清除框架扩展。最大化时清除框架，还原时按此参数恢复。
+- `dark_mode=False`：是否设置 `DWMWA_USE_IMMERSIVE_DARK_MODE`。深色模式下 Windows 会使用更大、更深的系统阴影，需同时保持 `shadow=True`；此参数不会修改 HTML 配色，也不会改变其他边框参数。
+- `dwm_border=True`：显示 Windows 绘制的窗口外框；`False` 使用 `DWMWA_COLOR_NONE` 隐藏外框，但不改变阴影设置。
+- `dwm_border_color=None`：DWM 外框使用系统默认颜色；也可传入 32 位 Win32 `COLORREF`（与 `bgcolor` 一样为 BGR 字节顺序）。仅在 `dwm_border=True` 时生效。
+- `inner_border_width=1`：宿主内边框的像素宽度，必须是非负整数。WebView 内容按该宽度向四周内缩，0 表示没有内边框，最大化时自动取消内缩。
+- `inner_border_color=None`：宿主内边框使用 `bgcolor`；也可传入独立的 `COLORREF`。它不会影响 DWM 外框。
+
+DWM 外框没有公开的宽度设置接口，粗细由 Windows 和 DPI 决定；`DWMWA_VISIBLE_FRAME_BORDER_THICKNESS` 只能读取系统宽度，`DwmExtendFrameIntoClientArea` 的边距用于框架延伸和阴影，并不是外框线宽。需要任意像素宽度时使用 `inner_border_width`。
 
 `window.view` 提供完整嵌入式 `WebView`，`window.bridge` 用于注册业务函数；`FramelessWindow.close()` 幂等，并销毁宿主、关闭 WebView、注销窗口类和释放画刷。创建、运行和关闭都应在同一 UI 线程执行。完整的拖动、边缘缩放、后台任务示例见 `examples/05_frameless_app/app.py`。
 
@@ -338,6 +355,13 @@ GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.
 Win32 助手另需人工确认：打开对话框能选择已有文件、取消返回 `None`；保存对话框允许新文件并提示覆盖；托盘左右键触发回调，`remove()` 后无图标残留。
 
 ## CHANGELOG
+
+### 0.1.5
+
+- `FramelessWindow` 新增独立的 `shadow`、`dark_mode`、`dwm_border` / `dwm_border_color`、`inner_border_width` / `inner_border_color` 参数；系统阴影、深色模式、DWM 外框与宿主内边框不再耦合。
+- 使用 `WS_OVERLAPPEDWINDOW` 和四边 1px DWM 框架扩展实现系统阴影；深色模式支持更大、更深的 DWM 阴影。文档明确 DWM 外框宽度只能由系统控制，任意像素宽度由宿主内边框实现。
+- 修复八方向斜向缩放、圆角窗口关闭按钮右上角填充、最小化还原后的按钮残留高亮，以及最小化动画期间 WebView 重排导致宿主背景整窗闪现的问题。
+- 窗口还原和激活时重新应用 DWM 外框配置，避免系统默认外框短暂覆盖自定义内边框；新增最小尺寸、DWM 状态、边框参数组合和窗口消息回归测试。
 
 ### 0.1.4
 
