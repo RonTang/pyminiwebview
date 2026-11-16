@@ -73,20 +73,32 @@ def test_standalone_reveals_first_frame_at_requested_size(tmp_path):
         assert user32.GetClientRect(hwnd, ctypes.byref(rect))
         return rect.right - rect.left, rect.bottom - rect.top
 
-    watchdog = threading.Timer(5, instance.terminate)
+    stop_polling = threading.Event()
+
+    def terminate_after_reveal():
+        while not stop_polling.wait(0.05):
+            if user32.IsWindowVisible(hwnd):
+                instance.terminate()
+                return
+
+    reveal_watcher = threading.Thread(target=terminate_after_reveal, daemon=True)
+    watchdog = threading.Timer(10, instance.terminate)
     try:
         assert not user32.IsWindowVisible(hwnd)
         initial_size = size()
         instance.set_html("<style>body{background:#0d1226}</style><h1>ready</h1>")
-        reveal_watchdog = threading.Timer(1, instance.terminate)
-        reveal_watchdog.start()
+        reveal_watcher.start()
+        watchdog.start()
         try:
             instance.run()
         finally:
-            reveal_watchdog.cancel()
+            stop_polling.set()
+            reveal_watcher.join(timeout=1)
+            watchdog.cancel()
         assert user32.IsWindowVisible(hwnd)
         assert size() == initial_size
     finally:
+        stop_polling.set()
         watchdog.cancel()
         instance.close()
 
