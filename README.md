@@ -23,10 +23,10 @@
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
 
-**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.5`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
+**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.6`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
 
 ```bash
-python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.5
+python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.6
 ```
 
 TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可以从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后还可从 Releases 页面获取。未来发布到正式 PyPI 后可使用：
@@ -38,7 +38,7 @@ python -m pip install pyminiwebview
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.5-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.6-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将文件命名为 `pyminiwebview.pyd`，放到应用脚本同目录或 `sys.path` 包含的其他目录，然后执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 wheel 可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
@@ -355,6 +355,12 @@ GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.
 Win32 助手另需人工确认：打开对话框能选择已有文件、取消返回 `None`；保存对话框允许新文件并提示覆盖；托盘左右键触发回调，`remove()` 后无图标残留。
 
 ## CHANGELOG
+
+### 0.1.6
+
+- 独立窗口与 `FramelessWindow` 的首帧等待恢复为两个 `requestAnimationFrame`，减少额外一帧的启动延迟。
+- `FramelessWindow` 改为在窗口隐藏时配置 DWM 框架，显示窗口时不再重复扩展框架，降低启动闪白风险。
+- 缓存 DWM 框架宽度与边框颜色，删除激活时的重复设置；尺寸变化仅在状态实际改变时调用相应 Win32 API，保留宿主内边框行为。
 
 ### 0.1.5
 

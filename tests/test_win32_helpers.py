@@ -196,20 +196,19 @@ def test_frameless_window_validates_dimensions():
 
 
 @pytest.mark.parametrize(
-    "ready, zoomed, shadow, expected_width",
+    "zoomed, shadow, expected_width",
     [
-        (True, False, True, 1),
-        (True, True, True, 0),
-        (False, False, True, 0),
-        (True, False, False, 0),
+        (False, True, 1),
+        (True, True, 0),
+        (False, False, 0),
     ],
 )
-def test_frameless_uses_dwm_frame_only_when_visible_and_restored(
-        monkeypatch, ready, zoomed, shadow, expected_width):
+def test_frameless_uses_dwm_frame_when_shadow_enabled_and_restored(
+        monkeypatch, zoomed, shadow, expected_width):
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
-    window.ready = ready
     window._shadow = shadow
+    window._dwm_frame_width = None
     calls = []
 
     def extend(hwnd, pointer):
@@ -227,6 +226,7 @@ def test_frameless_uses_dwm_frame_only_when_visible_and_restored(
 
     monkeypatch.setattr(frameless._user32, "IsZoomed", lambda _hwnd: zoomed)
     monkeypatch.setattr(frameless._dwmapi, "DwmExtendFrameIntoClientArea", extend)
+    window._extend_dwm_frame()
     window._extend_dwm_frame()
     assert calls == [(
         123, expected_width, expected_width, expected_width, expected_width
@@ -299,6 +299,7 @@ def test_frameless_applies_dwm_border_color(
     window.hwnd = 123
     window._dwm_border = dwm_border
     window._dwm_border_color = dwm_border_color
+    window._applied_dwm_border_color = None
     calls = []
 
     def set_attribute(hwnd, attribute, pointer, size):
@@ -310,6 +311,7 @@ def test_frameless_applies_dwm_border_color(
         return 0
 
     monkeypatch.setattr(frameless._dwmapi, "DwmSetWindowAttribute", set_attribute)
+    window._apply_dwm_border_color()
     window._apply_dwm_border_color()
     assert calls == [(123, frameless._DWMWA_BORDER_COLOR, expected_color, 4)]
 
@@ -358,17 +360,6 @@ def test_frameless_minimize_preserves_webview_layout(monkeypatch, size, expected
 
     assert layouts == [size] * expected_layouts
     assert border_updates == [size] * expected_layouts
-
-
-def test_frameless_activation_reapplies_dwm_border(monkeypatch):
-    window = FramelessWindow.__new__(FramelessWindow)
-    calls = []
-    window._extend_dwm_frame = lambda: calls.append("frame")
-    window._apply_dwm_border_color = lambda: calls.append("border")
-    monkeypatch.setattr(frameless._user32, "DefWindowProcW", lambda *args: 0)
-
-    assert window._wndproc(123, frameless._WM_ACTIVATE, 1, 0) == 0
-    assert calls == ["frame", "border"]
 
 
 @pytest.mark.parametrize(

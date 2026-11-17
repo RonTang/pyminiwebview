@@ -8,7 +8,6 @@ from pyminiwebview_helpers import Bridge
 _WM_DESTROY = 0x0002
 _WM_MOVE = 0x0003
 _WM_SIZE = 0x0005
-_WM_ACTIVATE = 0x0006
 _WM_CLOSE = 0x0010
 _WM_GETMINMAXINFO = 0x0024
 _WM_NCCALCSIZE = 0x0083
@@ -268,6 +267,8 @@ class FramelessWindow:
         self._dark_mode = dark_mode
         self._dwm_border = dwm_border
         self._dwm_border_color = dwm_border_color
+        self._dwm_frame_width = None
+        self._applied_dwm_border_color = None
         self._inner_border_width = inner_border_width
         self._inner_border_color = inner_border_color
         self._user_data_folder = user_data_folder
@@ -309,9 +310,12 @@ class FramelessWindow:
         return max(1, value - 1)
 
     def _extend_dwm_frame(self):
-        width = int(self.ready and self._shadow and not _user32.IsZoomed(self.hwnd))
+        width = int(self._shadow and not _user32.IsZoomed(self.hwnd))
+        if width == self._dwm_frame_width:
+            return
         margins = _MARGINS(width, width, width, width)
         _dwmapi.DwmExtendFrameIntoClientArea(self.hwnd, ctypes.byref(margins))
+        self._dwm_frame_width = width
 
     def _apply_dark_mode(self):
         value = wintypes.BOOL(self._dark_mode)
@@ -339,7 +343,10 @@ class FramelessWindow:
             color = self._dwm_border_color
         else:
             color = _DWMWA_COLOR_DEFAULT
+        if color == self._applied_dwm_border_color:
+            return
         self._set_dwm_border_color(color)
+        self._applied_dwm_border_color = color
 
     def _layout_webview(self):
         if not self.hwnd or not self.view or not self._widget:
@@ -403,6 +410,7 @@ class FramelessWindow:
         )
         self._apply_dark_mode()
         self._apply_dwm_frame_policy()
+        self._extend_dwm_frame()
         self._apply_dwm_border_color()
         self.view = pyminiwebview.WebView(
             window=self.hwnd,
@@ -439,9 +447,9 @@ class FramelessWindow:
         self.view.js_init(
             """
             document.addEventListener('DOMContentLoaded', () => {
-              requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => {
+              requestAnimationFrame(() => requestAnimationFrame(() => {
                 __window_ready();
-              })));
+              }));
             });
             """
         )
@@ -453,7 +461,6 @@ class FramelessWindow:
         _user32.ShowWindow(self.hwnd, _SW_SHOW)
         _user32.UpdateWindow(self.hwnd)
         self.ready = True
-        self._extend_dwm_frame()
         _user32.SetForegroundWindow(self.hwnd)
         self.view.set_focus()
         self._notify_maximized_state()
@@ -582,10 +589,6 @@ class FramelessWindow:
             return _user32.DefWindowProcW(hwnd, message, wparam, -1)
         if message in (_WM_NCUAHDRAWCAPTION, _WM_NCUAHDRAWFRAME):
             return 0
-        if message == _WM_ACTIVATE:
-            self._extend_dwm_frame()
-            self._apply_dwm_border_color()
-            return _user32.DefWindowProcW(hwnd, message, wparam, lparam)
         if message == _WM_GETMINMAXINFO:
             info = ctypes.cast(lparam, ctypes.POINTER(_MINMAXINFO)).contents
             info.ptMinTrackSize = _POINT(self._min_width, self._min_height)
