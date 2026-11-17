@@ -149,6 +149,14 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
         assert params.rgrc[0].right == 760 - padding
         assert params.rgrc[0].bottom == 540 - padding
 
+        window.on_maximize_change = None
+        assert window.toggle_maximize() is True
+        assert user32.IsZoomed(hwnd)
+        assert not user32.IsWindowVisible(window._resize_overlay)
+        assert window.toggle_maximize() is False
+        assert not user32.IsZoomed(hwnd)
+        assert user32.IsWindowVisible(window._resize_overlay)
+
         rect = wintypes.RECT()
         assert user32.GetWindowRect(hwnd, ctypes.byref(rect))
         middle_x = (rect.left + rect.right) // 2
@@ -495,3 +503,19 @@ def test_tray_icon_distinguishes_left_and_right_click():
         assert events == ["left", "right"]
     finally:
         icon.remove()
+
+
+def test_tray_icon_create_failure_unregisters_window_class(monkeypatch):
+    unregister_calls = []
+    monkeypatch.setattr(tray._user32, "RegisterClassW", lambda _pointer: 1)
+    monkeypatch.setattr(tray._user32, "CreateWindowExW", lambda *args: None)
+    monkeypatch.setattr(
+        tray._user32, "UnregisterClassW",
+        lambda *args: unregister_calls.append(args) or True,
+    )
+
+    with pytest.raises(OSError):
+        TrayIcon()
+
+    assert len(unregister_calls) == 1
+    assert unregister_calls[0][0].startswith("PyMiniWebViewTray_")

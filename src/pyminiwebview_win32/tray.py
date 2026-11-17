@@ -171,16 +171,15 @@ class TrayIcon:
         return _user32.DefWindowProcW(hwnd, message, wparam, lparam)
 
     def remove(self):
-        if self._hwnd is None:
-            return
-        if self._icon_added:
-            _shell32.Shell_NotifyIconW(
-                _NIM_DELETE, ctypes.byref(self._notify_data())
-            )
-            self._icon_added = False
-        if not _user32.DestroyWindow(self._hwnd):
-            raise ctypes.WinError(ctypes.get_last_error())
-        self._hwnd = None
+        if self._hwnd is not None:
+            if self._icon_added:
+                _shell32.Shell_NotifyIconW(
+                    _NIM_DELETE, ctypes.byref(self._notify_data())
+                )
+                self._icon_added = False
+            if not _user32.DestroyWindow(self._hwnd):
+                raise ctypes.WinError(ctypes.get_last_error())
+            self._hwnd = None
         if self._class_registered:
             _user32.UnregisterClassW(self._class_name, self._hinstance)
             self._class_registered = False
