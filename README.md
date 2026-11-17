@@ -104,6 +104,8 @@ with pyminiwebview.WebView(app_name="async-demo") as view:
 
 **取消协程不等于终止 executor 中的阻塞工作。** 对 `asyncio.to_thread` 或默认 executor，`close()` 会取消协程的等待并拒绝 Promise，但不会等待、关闭默认 executor，也无法强杀已经在运行的阻塞函数。文件保存、网络等需要严格退出语义的任务，应由应用自行管理 executor 和 `threading.Event` 取消标志，让阻塞函数在合适的边界检查标志并结束；退出时的 executor `shutdown` 也由应用负责。等待不可取消的工作可能阻塞 UI，`close(timeout)` 不会替这类工作提供强制超时。
 
+`pyminiwebview_helpers` 使用 PEP 562 惰性导出：仅导入 `Bridge` 或 `call_js` 不会加载 `async_bridge` 和 `asyncio`，首次访问 `AsyncBridge` 时才加载异步实现。未使用异步桥接的同步应用可在 Nuitka 中添加 `--nofollow-import-to=asyncio`，避免将 asyncio 打入程序；使用 `AsyncBridge` 或自行导入 asyncio 的应用不能添加该选项。
+
 后台线程投递：
 
 ```python
@@ -207,7 +209,7 @@ with FramelessWindow(
     window.run()
 ```
 
-内置 JS 函数为 `__window_minimize()`、`__window_toggle_maximize()`、`__window_close()`、`__window_start_move()`、`__window_start_resize(direction)` 和自动首帧回调 `__window_ready()`。缩放方向支持 `l`、`r`、`t`、`b`、`tl`、`tr`、`bl`、`br`。页面无需调用 ready，库会在 DOM 就绪后的两个动画帧自动显示窗口。可选 `on_maximize_change` 回调用于更新自定义标题栏图标。
+内置 JS 函数为 `__window_minimize()`、`__window_toggle_maximize()`、`__window_close()`、`__window_start_move()`、`__window_start_resize(direction)` 和自动首帧回调 `__window_ready()`。左右和底边保留原生 Win32 非客户区缩边，顶部使用不占布局的不可见原生命中区，支持八方向拖动；命中区域宽度由系统和 DPI 决定，无需页面添加手柄；自定义手柄仍可调用 `__window_start_resize(direction)`，方向为 `l`、`r`、`t`、`b`、`tl`、`tr`、`bl`、`br`。页面无需调用 ready，库会在 DOM 就绪后的两个动画帧自动显示窗口。可选 `on_maximize_change` 回调用于更新自定义标题栏图标。
 
 阴影、深色模式、DWM 外框和宿主内边框相互独立：
 
@@ -361,6 +363,8 @@ Win32 助手另需人工确认：打开对话框能选择已有文件、取消�
 - 独立窗口与 `FramelessWindow` 的首帧等待恢复为两个 `requestAnimationFrame`，减少额外一帧的启动延迟。
 - `FramelessWindow` 改为在窗口隐藏时配置 DWM 框架，显示窗口时不再重复扩展框架，降低启动闪白风险。
 - 缓存 DWM 框架宽度与边框颜色，删除激活时的重复设置；尺寸变化仅在状态实际改变时调用相应 Win32 API，保留宿主内边框行为。
+- `pyminiwebview_helpers` 改为 PEP 562 惰性导出，仅使用 `Bridge` / `call_js` 时不再导入 `asyncio`，同步应用可通过 Nuitka `--nofollow-import-to=asyncio` 减少打包体积。
+- `FramelessWindow` 使用原生 Win32 非客户区和顶部不可见命中区支持八方向缩放，无需页面手柄；移除原生标题栏按钮并保留任务栏最小化／还原切换，05 示例删除重复缩放代码。
 
 ### 0.1.5
 

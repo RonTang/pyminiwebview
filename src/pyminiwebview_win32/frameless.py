@@ -10,6 +10,7 @@ _WM_MOVE = 0x0003
 _WM_SIZE = 0x0005
 _WM_CLOSE = 0x0010
 _WM_GETMINMAXINFO = 0x0024
+_WM_NCDESTROY = 0x0082
 _WM_NCCALCSIZE = 0x0083
 _WM_NCHITTEST = 0x0084
 _WM_NCACTIVATE = 0x0086
@@ -21,6 +22,7 @@ _WM_LBUTTONUP = 0x0202
 _WM_CAPTURECHANGED = 0x0215
 _SIZE_MINIMIZED = 1
 _SW_MAXIMIZE = 3
+_SW_SHOWNOACTIVATE = 4
 _SW_SHOW = 5
 _SW_MINIMIZE = 6
 _SW_RESTORE = 9
@@ -58,7 +60,13 @@ _HT_CODES = {
     "bl": _HTBOTTOMLEFT,
     "br": _HTBOTTOMRIGHT,
 }
-_WS_OVERLAPPEDWINDOW = 0x00CF0000
+_HT_RESIZE_CODES = frozenset(_HT_CODES.values())
+_WS_CHILD = 0x40000000
+_WS_VISIBLE = 0x10000000
+_WS_CLIPSIBLINGS = 0x04000000
+_WS_THICKFRAME = 0x00040000
+_WS_MINIMIZEBOX = 0x00020000
+_WS_FRAMELESS_RESIZABLE = _WS_THICKFRAME | _WS_MINIMIZEBOX
 _ERROR_ACCESS_DENIED = 5
 _LONG_PTR = ctypes.c_ssize_t
 _WNDPROC = ctypes.WINFUNCTYPE(
@@ -277,6 +285,10 @@ class FramelessWindow:
         self._class_atom = None
         self._background_brush = None
         self._wndproc_ref = _WNDPROC(self._wndproc)
+        self._overlay_wndproc_ref = _WNDPROC(self._overlay_wndproc)
+        self._overlay_class_name = f"{self._class_name}_TopResize"
+        self._overlay_class_atom = None
+        self._resize_overlay = None
         self._hinstance = _kernel32.GetModuleHandleW(None)
         self._move_serial = 0
         self._last_title_down = None
@@ -313,7 +325,7 @@ class FramelessWindow:
         width = int(self._shadow and not _user32.IsZoomed(self.hwnd))
         if width == self._dwm_frame_width:
             return
-        margins = _MARGINS(width, width, width, width)
+        margins = _MARGINS(width, width, 0, width)
         _dwmapi.DwmExtendFrameIntoClientArea(self.hwnd, ctypes.byref(margins))
         self._dwm_frame_width = width
 
@@ -348,6 +360,82 @@ class FramelessWindow:
         self._set_dwm_border_color(color)
         self._applied_dwm_border_color = color
 
+    def _create_native_resize(self):
+        window_class = _WNDCLASSW()
+        window_class.lpfnWndProc = self._overlay_wndproc_ref
+        window_class.hInstance = self._hinstance
+        window_class.lpszClassName = self._overlay_class_name
+        self._overlay_class_atom = _user32.RegisterClassW(
+            ctypes.byref(window_class)
+        )
+        if not self._overlay_class_atom:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self._resize_overlay = _user32.CreateWindowExW(
+            0, self._overlay_class_name, None,
+            _WS_CHILD | _WS_VISIBLE | _WS_CLIPSIBLINGS,
+            0, 0, self._width, self._ring_padding(),
+            self.hwnd, None, self._hinstance, None,
+        )
+        if not self._resize_overlay:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def _layout_native_resize(self, width):
+        if not self._resize_overlay:
+            return
+        if _user32.IsZoomed(self.hwnd):
+            _user32.ShowWindow(self._resize_overlay, _SW_HIDE)
+            return
+        _user32.SetWindowPos(
+            self._resize_overlay, None, 0, 0, width, self._ring_padding(),
+            _SWP_NOACTIVATE,
+        )
+        _user32.ShowWindow(self._resize_overlay, _SW_SHOWNOACTIVATE)
+
+    def _overlay_wndproc(self, hwnd, message, wparam, lparam):
+        if message == _WM_NCHITTEST and self.hwnd:
+            return self._native_hit_test(lparam)
+        if (
+            message == _WM_NCLBUTTONDOWN
+            and wparam in _HT_RESIZE_CODES
+            and self.hwnd
+        ):
+            _user32.PostMessageW(self.hwnd, message, wparam, lparam)
+            return 0
+        if message == _WM_NCDESTROY:
+            self._resize_overlay = None
+        return _user32.DefWindowProcW(hwnd, message, wparam, lparam)
+
+    def _native_hit_test(self, lparam):
+        if _user32.IsZoomed(self.hwnd):
+            return _HTCLIENT
+        x = ctypes.c_short(lparam & 0xFFFF).value
+        y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+        rect = wintypes.RECT()
+        if not _user32.GetWindowRect(self.hwnd, ctypes.byref(rect)):
+            return _HTCLIENT
+        padding = self._ring_padding()
+        left = x - rect.left
+        top = y - rect.top
+        right = rect.right - x
+        bottom = rect.bottom - y
+        if left < padding and top < padding:
+            return _HTTOPLEFT
+        if right < padding and top < padding:
+            return _HTTOPRIGHT
+        if left < padding and bottom < padding:
+            return _HTBOTTOMLEFT
+        if right < padding and bottom < padding:
+            return _HTBOTTOMRIGHT
+        if left < padding:
+            return _HTLEFT
+        if right < padding:
+            return _HTRIGHT
+        if top < padding:
+            return _HTTOP
+        if bottom < padding:
+            return _HTBOTTOM
+        return _HTCLIENT
+
     def _layout_webview(self):
         if not self.hwnd or not self.view or not self._widget:
             return
@@ -361,6 +449,7 @@ class FramelessWindow:
             self._widget, None, border, border, width, height,
             _SWP_NOZORDER | _SWP_NOACTIVATE,
         )
+        self._layout_native_resize(rect.right - rect.left)
 
     def _create(self):
         ctypes.set_last_error(0)
@@ -397,7 +486,7 @@ class FramelessWindow:
             work_area.bottom - work_area.top - self._height
         ) // 2
         self.hwnd = _user32.CreateWindowExW(
-            0, self._class_name, self._title, _WS_OVERLAPPEDWINDOW,
+            0, self._class_name, self._title, _WS_FRAMELESS_RESIZABLE,
             x, y, self._width, self._height,
             None, None, self._hinstance, None,
         )
@@ -426,6 +515,7 @@ class FramelessWindow:
         self._widget = self.view.get_native_handle(
             pyminiwebview.NATIVE_HANDLE_KIND_UI_WIDGET
         )
+        self._create_native_resize()
         if not _user32.SetWindowPos(
             self.hwnd, None, 0, 0,
             self._width, self._height,
@@ -584,6 +674,11 @@ class FramelessWindow:
                     )
                     if _user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
                         params.rgrc[0] = info.rcWork
+                else:
+                    padding = self._ring_padding()
+                    params.rgrc[0].left += padding
+                    params.rgrc[0].right -= padding
+                    params.rgrc[0].bottom -= padding
             return 0
         if message == _WM_NCACTIVATE:
             return _user32.DefWindowProcW(hwnd, message, wparam, -1)
@@ -603,35 +698,7 @@ class FramelessWindow:
                 )
             return 0
         if message == _WM_NCHITTEST:
-            if _user32.IsZoomed(hwnd):
-                return _HTCLIENT
-            x = ctypes.c_short(lparam & 0xFFFF).value
-            y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
-            rect = wintypes.RECT()
-            if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                return _HTCLIENT
-            padding = self._ring_padding()
-            left = x - rect.left
-            top = y - rect.top
-            right = rect.right - x
-            bottom = rect.bottom - y
-            if left < padding and top < padding:
-                return _HTTOPLEFT
-            if right < padding and top < padding:
-                return _HTTOPRIGHT
-            if left < padding and bottom < padding:
-                return _HTBOTTOMLEFT
-            if right < padding and bottom < padding:
-                return _HTBOTTOMRIGHT
-            if left < padding:
-                return _HTLEFT
-            if right < padding:
-                return _HTRIGHT
-            if top < padding:
-                return _HTTOP
-            if bottom < padding:
-                return _HTBOTTOM
-            return _HTCLIENT
+            return self._native_hit_test(lparam)
         if message == _WM_MOUSEMOVE and self._resize_direction:
             self._resize()
             return 0
@@ -681,6 +748,9 @@ class FramelessWindow:
         if self._class_atom:
             _user32.UnregisterClassW(self._class_name, self._hinstance)
             self._class_atom = None
+        if self._overlay_class_atom:
+            _user32.UnregisterClassW(self._overlay_class_name, self._hinstance)
+            self._overlay_class_atom = None
         if self._background_brush:
             _gdi32.DeleteObject(self._background_brush)
             self._background_brush = None

@@ -10,7 +10,6 @@ function errorText(error) {
 
 window.app = {
   setMaximized(maximized) {
-    document.body.classList.toggle('maximized', maximized);
     const button = byId('btn-max');
     button.textContent = maximized ? '❐' : '□';
     button.title = maximized ? '还原' : '最大化';
@@ -46,15 +45,6 @@ byId('btn-max').addEventListener('click', () => __window_toggle_maximize());
 byId('btn-close').addEventListener('click', () => __window_close());
 byId('titlebar').addEventListener('mousedown', event => {
   if (event.button === 0 && !event.target.closest('button')) __window_start_move();
-});
-
-document.querySelectorAll('.resize-handle').forEach(handle => {
-  handle.addEventListener('mousedown', event => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    __window_start_resize(handle.dataset.direction);
-  });
 });
 
 byId('bridge-button').addEventListener('click', async () => {

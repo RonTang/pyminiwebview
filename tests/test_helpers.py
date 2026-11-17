@@ -1,6 +1,8 @@
 import gc
 import json
 import logging
+import os
+import subprocess
 import sys
 import threading
 import weakref
@@ -32,6 +34,23 @@ def decoded_return(view):
     assert len(view.returns) == 1
     request_id, status, result = view.returns[0]
     return request_id, status, json.loads(result)
+
+
+def test_sync_exports_do_not_import_asyncio():
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(sys.path)
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; "
+            "from pyminiwebview_helpers import Bridge, call_js; "
+            "assert 'asyncio' not in sys.modules; "
+            "assert 'pyminiwebview_helpers.async_bridge' not in sys.modules",
+        ],
+        check=True,
+        env=environment,
+    )
 
 
 def test_expose_supports_no_args_multiple_args_and_chinese():

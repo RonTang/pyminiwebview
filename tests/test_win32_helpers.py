@@ -143,10 +143,11 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
         assert window._wndproc(
             hwnd, frameless._WM_NCCALCSIZE, 1, ctypes.addressof(params)
         ) == 0
-        assert params.rgrc[0].left == 0
+        padding = window._ring_padding()
+        assert params.rgrc[0].left == padding
         assert params.rgrc[0].top == 0
-        assert params.rgrc[0].right == 760
-        assert params.rgrc[0].bottom == 540
+        assert params.rgrc[0].right == 760 - padding
+        assert params.rgrc[0].bottom == 540 - padding
 
         rect = wintypes.RECT()
         assert user32.GetWindowRect(hwnd, ctypes.byref(rect))
@@ -229,7 +230,7 @@ def test_frameless_uses_dwm_frame_when_shadow_enabled_and_restored(
     window._extend_dwm_frame()
     window._extend_dwm_frame()
     assert calls == [(
-        123, expected_width, expected_width, expected_width, expected_width
+        123, expected_width, expected_width, 0, expected_width
     )]
 
 
@@ -322,6 +323,7 @@ def test_frameless_inner_border_width_insets_webview(monkeypatch, zoomed, border
     window.hwnd = 123
     window.view = object()
     window._widget = 456
+    window._resize_overlay = None
     window._inner_border_width = 3
     calls = []
 
@@ -342,6 +344,23 @@ def test_frameless_inner_border_width_insets_webview(monkeypatch, zoomed, border
     assert calls == [(
         456, None, border, border, 100 - 2 * border, 80 - 2 * border,
         frameless._SWP_NOZORDER | frameless._SWP_NOACTIVATE,
+    )]
+
+
+def test_frameless_native_overlay_forwards_resize_to_host(monkeypatch):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    calls = []
+    monkeypatch.setattr(
+        frameless._user32, "PostMessageW",
+        lambda *args: calls.append(args) or True,
+    )
+
+    assert window._overlay_wndproc(
+        456, frameless._WM_NCLBUTTONDOWN, frameless._HTTOPLEFT, 789
+    ) == 0
+    assert calls == [(
+        123, frameless._WM_NCLBUTTONDOWN, frameless._HTTOPLEFT, 789
     )]
 
 
