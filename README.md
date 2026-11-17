@@ -191,6 +191,7 @@ with FramelessWindow(
     height=740,
     min_width=720,
     min_height=520,
+    resizable=True,
     app_name="my-app",
     bgcolor=0x0026120D,
     shadow=True,
@@ -210,6 +211,16 @@ with FramelessWindow(
 ```
 
 内置 JS 函数为 `__window_minimize()`、`__window_toggle_maximize()`、`__window_close()`、`__window_start_move()`、`__window_start_resize(direction)` 和自动首帧回调 `__window_ready()`。左右和底边保留原生 Win32 非客户区缩边，顶部使用不占布局的不可见原生命中区，支持八方向拖动；命中区域宽度由系统和 DPI 决定，无需页面添加手柄；自定义手柄仍可调用 `__window_start_resize(direction)`，方向为 `l`、`r`、`t`、`b`、`tl`、`tr`、`bl`、`br`。页面无需调用 ready，库会在 DOM 就绪后的两个动画帧自动显示窗口。可选 `on_maximize_change` 回调用于更新自定义标题栏图标。
+
+`resizable=True` 默认允许边缘拖动缩放和最大化。固定大小窗口显式传入 `resizable=False`：
+
+```python
+with FramelessWindow(width=800, height=600, resizable=False) as window:
+    window.view.set_html("<h1>Fixed size</h1>")
+    window.run()
+```
+
+固定模式会禁用八方向缩放、`__window_start_resize()`、最大化按钮对应的 `__window_toggle_maximize()` 以及标题栏双击最大化，同时保留标题栏拖动和最小化。自定义标题栏应在此模式下隐藏或禁用最大化按钮。
 
 阴影、深色模式、DWM 外框和宿主内边框相互独立：
 

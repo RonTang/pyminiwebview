@@ -183,11 +183,34 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
     window.close()
 
 
+def test_fixed_frameless_window_disables_resizing_and_maximize():
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    window._resizable = False
+    window._width = 760
+    window._height = 540
+    window._min_width = 640
+    window._min_height = 480
+
+    assert window.start_resize("br") is False
+    assert window.toggle_maximize() is False
+    assert window._native_hit_test(0) == frameless._HTCLIENT
+
+    info = frameless._MINMAXINFO()
+    assert window._wndproc(
+        123, frameless._WM_GETMINMAXINFO, 0, ctypes.addressof(info)
+    ) == 0
+    assert (info.ptMinTrackSize.x, info.ptMinTrackSize.y) == (760, 540)
+    assert (info.ptMaxTrackSize.x, info.ptMaxTrackSize.y) == (760, 540)
+
+
 def test_frameless_window_validates_dimensions():
     with pytest.raises(ValueError, match="positive"):
         FramelessWindow(width=0)
     with pytest.raises(ValueError, match="must not exceed"):
         FramelessWindow(width=600, height=500, min_width=700)
+    with pytest.raises(TypeError, match="resizable"):
+        FramelessWindow(resizable=1)
     with pytest.raises(TypeError, match="shadow"):
         FramelessWindow(shadow=1)
     with pytest.raises(TypeError, match="dark_mode"):

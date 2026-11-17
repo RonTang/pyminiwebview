@@ -66,6 +66,8 @@ _WS_CHILD = 0x40000000
 _WS_VISIBLE = 0x10000000
 _WS_CLIPSIBLINGS = 0x04000000
 _WS_FRAMELESS_RESIZABLE = 0x00CF0000
+_WS_THICKFRAME = 0x00040000
+_WS_MAXIMIZEBOX = 0x00010000
 _ERROR_ACCESS_DENIED = 5
 _LONG_PTR = ctypes.c_ssize_t
 _WNDPROC = ctypes.WINFUNCTYPE(
@@ -218,6 +220,7 @@ class FramelessWindow:
         *,
         min_width=640,
         min_height=480,
+        resizable=True,
         app_name="pyminiwebview",
         debug=False,
         bgcolor=0xFFFFFF,
@@ -235,6 +238,8 @@ class FramelessWindow:
             raise ValueError("Window dimensions must be positive")
         if min_width > width or min_height > height:
             raise ValueError("Minimum dimensions must not exceed initial dimensions")
+        if not isinstance(resizable, bool):
+            raise TypeError("resizable must be a bool")
         if not isinstance(shadow, bool):
             raise TypeError("shadow must be a bool")
         if not isinstance(dark_mode, bool):
@@ -267,6 +272,7 @@ class FramelessWindow:
         self._height = height
         self._min_width = min_width
         self._min_height = min_height
+        self._resizable = resizable
         self._app_name = app_name
         self._debug = debug
         self._bgcolor = bgcolor
@@ -405,7 +411,7 @@ class FramelessWindow:
         return _user32.DefWindowProcW(hwnd, message, wparam, lparam)
 
     def _native_hit_test(self, lparam):
-        if _user32.IsZoomed(self.hwnd):
+        if not self._resizable or _user32.IsZoomed(self.hwnd):
             return _HTCLIENT
         x = ctypes.c_short(lparam & 0xFFFF).value
         y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
@@ -484,8 +490,11 @@ class FramelessWindow:
         y = work_area.top + (
             work_area.bottom - work_area.top - self._height
         ) // 2
+        style = _WS_FRAMELESS_RESIZABLE
+        if not self._resizable:
+            style &= ~(_WS_THICKFRAME | _WS_MAXIMIZEBOX)
         self.hwnd = _user32.CreateWindowExW(
-            0, self._class_name, self._title, _WS_FRAMELESS_RESIZABLE,
+            0, self._class_name, self._title, style,
             x, y, self._width, self._height,
             None, None, self._hinstance, None,
         )
@@ -514,7 +523,8 @@ class FramelessWindow:
         self._widget = self.view.get_native_handle(
             pyminiwebview.NATIVE_HANDLE_KIND_UI_WIDGET
         )
-        self._create_native_resize()
+        if self._resizable:
+            self._create_native_resize()
         if not _user32.SetWindowPos(
             self.hwnd, None, 0, 0,
             self._width, self._height,
@@ -562,7 +572,7 @@ class FramelessWindow:
         return True
 
     def toggle_maximize(self):
-        if not self.hwnd:
+        if not self.hwnd or not self._resizable:
             return False
         _user32.ShowWindow(
             self.hwnd, _SW_RESTORE if _user32.IsZoomed(self.hwnd) else _SW_MAXIMIZE
@@ -612,6 +622,7 @@ class FramelessWindow:
     def start_resize(self, direction):
         if (
             not self.hwnd
+            or not self._resizable
             or direction not in _HT_CODES
             or _user32.IsZoomed(self.hwnd)
         ):
@@ -686,6 +697,9 @@ class FramelessWindow:
         if message == _WM_GETMINMAXINFO:
             info = ctypes.cast(lparam, ctypes.POINTER(_MINMAXINFO)).contents
             info.ptMinTrackSize = _POINT(self._min_width, self._min_height)
+            if not self._resizable:
+                info.ptMinTrackSize = _POINT(self._width, self._height)
+                info.ptMaxTrackSize = _POINT(self._width, self._height)
             monitor_info = _MONITORINFO()
             monitor_info.cbSize = ctypes.sizeof(monitor_info)
             monitor = _user32.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
