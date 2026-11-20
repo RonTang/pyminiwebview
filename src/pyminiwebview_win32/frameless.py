@@ -717,7 +717,10 @@ class FramelessWindow:
             monitor = _user32.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
             if _user32.GetMonitorInfoW(monitor, ctypes.byref(monitor_info)):
                 work = monitor_info.rcWork
-                info.ptMaxPosition = _POINT(work.left, work.top)
+                monitor_bounds = monitor_info.rcMonitor
+                info.ptMaxPosition = _POINT(
+                    work.left - monitor_bounds.left, work.top - monitor_bounds.top
+                )
                 info.ptMaxSize = _POINT(
                     work.right - work.left, work.bottom - work.top
                 )

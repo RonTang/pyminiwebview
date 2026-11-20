@@ -209,6 +209,34 @@ def test_fixed_frameless_window_disables_resizing_and_maximize():
     assert (info.ptMaxTrackSize.x, info.ptMaxTrackSize.y) == (760, 540)
 
 
+def test_frameless_maximize_uses_monitor_relative_position(monkeypatch):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._resizable = True
+    window._min_width = 640
+    window._min_height = 480
+
+    monkeypatch.setattr(
+        frameless._user32, "MonitorFromWindow", lambda _hwnd, _flags: 99
+    )
+
+    def get_monitor_info(_monitor, pointer):
+        monitor_info = ctypes.cast(
+            pointer, ctypes.POINTER(frameless._MONITORINFO)
+        ).contents
+        monitor_info.rcMonitor = wintypes.RECT(1920, 0, 3840, 1080)
+        monitor_info.rcWork = wintypes.RECT(1980, 0, 3840, 1040)
+        return True
+
+    monkeypatch.setattr(frameless._user32, "GetMonitorInfoW", get_monitor_info)
+
+    info = frameless._MINMAXINFO()
+    assert window._wndproc(
+        123, frameless._WM_GETMINMAXINFO, 0, ctypes.addressof(info)
+    ) == 0
+    assert (info.ptMaxPosition.x, info.ptMaxPosition.y) == (60, 0)
+    assert (info.ptMaxSize.x, info.ptMaxSize.y) == (1860, 1040)
+
+
 def test_frameless_window_validates_dimensions():
     with pytest.raises(ValueError, match="positive"):
         FramelessWindow(width=0)

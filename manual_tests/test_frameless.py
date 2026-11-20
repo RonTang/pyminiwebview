@@ -504,7 +504,10 @@ document.addEventListener('DOMContentLoaded', () => {
             monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
             if user32.GetMonitorInfoW(monitor, ctypes.byref(monitor_info)):
                 work = monitor_info.rcWork
-                info.ptMaxPosition = Point(work.left, work.top)
+                monitor_bounds = monitor_info.rcMonitor
+                info.ptMaxPosition = Point(
+                    work.left - monitor_bounds.left, work.top - monitor_bounds.top
+                )
                 info.ptMaxSize = Point(work.right - work.left, work.bottom - work.top)
             return 0
         if message == WM_NCHITTEST:
