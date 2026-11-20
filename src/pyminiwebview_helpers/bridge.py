@@ -24,17 +24,38 @@ class Bridge:
     """Expose synchronous Python functions as Promise-returning JS functions.
 
     Args:
-        view: An open WebView that implements ``js_bind`` and ``js_return``.
+        view: An open WebView that implements ``js_bind``, ``js_unbind``, and
+            ``js_return``.
 
-    The bridge does not create threads, dispatch work, or manage the WebView's
-    lifetime. Registration and callbacks follow the underlying WebView's UI
-    thread rules, and the caller must still close the WebView explicitly or use
-    its context manager.
+    The bridge does not create threads or dispatch work. Registration, callbacks,
+    and ``close()`` follow the underlying WebView's UI thread rules. Close the
+    bridge before the WebView, preferably with nested context managers.
     """
 
     def __init__(self, view):
         self._view = view
         self._names = set()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def close(self):
+        """Unbind every registered function and release the WebView reference.
+
+        Must be called before ``view.close()``. The method is idempotent.
+        """
+        if self._view is None:
+            return
+        for name in list(self._names):
+            try:
+                self._view.js_unbind(name)
+            except KeyError:
+                pass
+        self._names.clear()
+        self._view = None
 
     def expose(self, function_or_name=None, *, name=None):
         """Register a synchronous function and return it unchanged.
@@ -89,6 +110,8 @@ class Bridge:
             raise ValueError("Bridge binding name must not be empty")
         if name in self._names:
             raise ValueError(f"Bridge binding already exists: {name!r}")
+        if self._view is None:
+            raise RuntimeError("Bridge is closed")
 
         view = self._view
 

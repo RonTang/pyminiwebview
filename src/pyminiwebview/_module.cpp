@@ -401,6 +401,22 @@ static int WebView_clear(WebViewObject *self) {
   return 0;
 }
 
+static void clear_pending_dispatch(WebViewObject *self) {
+  DispatchCall *call;
+  {
+    std::lock_guard<std::mutex> lock(*self->lifecycle_mutex);
+    call = self->pending_dispatch;
+    self->pending_dispatch = nullptr;
+  }
+  while (call != nullptr) {
+    DispatchCall *next = call->next;
+    call->owner = nullptr;
+    Py_CLEAR(call->callable);
+    delete call;
+    call = next;
+  }
+}
+
 static int WebView_traverse(WebViewObject *self, visitproc visit, void *arg) {
   Py_VISIT(self->bindings);
   if (self->bindings != nullptr) {
@@ -519,6 +535,7 @@ static int close_on_ui(WebViewObject *self) {
   NativeFinalizer finalizer{};
   detach_native(self, &finalizer);
   webview_error_t error = destroy_native_resources(&finalizer);
+  clear_pending_dispatch(self);
   Py_XDECREF(finalizer.bindings);
   if (error != WEBVIEW_ERROR_OK) {
     return set_webview_error("webview_destroy", error);
@@ -1549,7 +1566,7 @@ PyMODINIT_FUNC PyInit_pyminiwebview(void) {
                    WEBVIEW_NATIVE_HANDLE_KIND_UI_WIDGET) < 0 ||
       add_constant(module, "NATIVE_HANDLE_KIND_BROWSER_CONTROLLER",
                    WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER) < 0 ||
-      PyModule_AddStringConstant(module, "__version__", "0.1.6") < 0) {
+      PyModule_AddStringConstant(module, "__version__", "0.1.7") < 0) {
     Py_DECREF(module);
     return nullptr;
   }

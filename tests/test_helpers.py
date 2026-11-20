@@ -23,6 +23,9 @@ class FakeView:
             raise ValueError(name)
         self.bindings[name] = callback
 
+    def js_unbind(self, name):
+        del self.bindings[name]
+
     def js_return(self, request_id, status, result):
         self.returns.append((request_id, status, result))
 
@@ -177,6 +180,19 @@ def test_duplicate_binding_and_coroutine_registration_fail_early():
     with pytest.raises(TypeError, match="synchronous"):
         bridge.expose(asynchronous)
     assert set(view.bindings) == {"same"}
+
+
+def test_close_unbinds_all_functions_and_is_idempotent():
+    view = FakeView()
+    with Bridge(view) as bridge:
+        bridge.expose(lambda: 1, name="one")
+        bridge.expose(lambda: 2, name="two")
+
+    assert view.bindings == {}
+    assert bridge._view is None
+    bridge.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        bridge.expose(lambda: 3, name="three")
 
 
 def test_base_exception_is_not_converted_to_a_business_error():

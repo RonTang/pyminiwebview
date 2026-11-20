@@ -23,10 +23,10 @@
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
 
-**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.6`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
+**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.7`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
 
 ```bash
-python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.6
+python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.7
 ```
 
 TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可以从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后还可从 Releases 页面获取。未来发布到正式 PyPI 后可使用：
@@ -38,7 +38,7 @@ python -m pip install pyminiwebview
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.6-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.7-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将文件命名为 `pyminiwebview.pyd`，放到应用脚本同目录或 `sys.path` 包含的其他目录，然后执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 wheel 可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
@@ -66,21 +66,20 @@ import pyminiwebview
 from pyminiwebview_helpers import Bridge
 
 with pyminiwebview.WebView(app_name="binding-demo") as view:
-    bridge = Bridge(view)
+    with Bridge(view) as bridge:
+        @bridge.expose
+        def add(a, b):
+            return a + b
 
-    @bridge.expose
-    def add(a, b):
-        return a + b
+        @bridge.expose("greet")
+        def hello(name):
+            return f"你好，{name}"
 
-    @bridge.expose("greet")
-    def hello(name):
-        return f"你好，{name}"
-
-    view.set_html("<script>add(20, 22).then(console.log)</script>")
-    view.run()
+        view.set_html("<script>add(20, 22).then(console.log)</script>")
+        view.run()
 ```
 
-`Bridge` 只注册同步函数，自动处理位置参数 JSON 和返回值。除装饰器外，也可直接注册已有 callable：`bridge.expose(lambda: manager.open_excel(view), name="open_excel")`；`AsyncBridge` 同样支持 `bridge.expose(coroutine_function, name="load_data")`。普通 Python 异常以包含异常类型和消息的 object 拒绝 JS Promise，并在 Python 日志中记录 traceback；NaN、Infinity 和不可序列化结果会被拒绝。WebView 生命周期仍由调用者管理。
+`Bridge` 只注册同步函数，自动处理位置参数 JSON 和返回值。除装饰器外，也可直接注册已有 callable：`bridge.expose(lambda: manager.open_excel(view), name="open_excel")`；`AsyncBridge` 同样支持 `bridge.expose(coroutine_function, name="load_data")`。普通 Python 异常以包含异常类型和消息的 object 拒绝 JS Promise，并在 Python 日志中记录 traceback；NaN、Infinity 和不可序列化结果会被拒绝。`Bridge.close()` 幂等，会解绑全部函数；必须在 `view.close()` 前调用，嵌套上下文管理器会按正确顺序清理。
 
 需要 `async def` 时使用独立的 `AsyncBridge`。每个实例复用一个后台 asyncio 事件循环，所有调用在该循环上并发执行，不为每次请求创建线程：
 
@@ -100,7 +99,7 @@ with pyminiwebview.WebView(app_name="async-demo") as view:
         view.run()
 ```
 
-`AsyncBridge.close()` 必须先于 WebView `close()`，上下文管理器会按此顺序清理。关闭时停止接收新调用、取消并等待活动任务、拒绝对应 Promise，然后解绑；`cancel_all()` 可只取消当前任务而不关闭桥。取消是协作式的，协程应在清理后继续传播 `CancelledError`。协程运行在事件循环线程，UI-only WebView 方法仍需 `view.dispatch`；阻塞调用应显式移入 executor，不能指望 `async def` 自动避免阻塞。
+`AsyncBridge.close()` 必须先于 WebView `close()`，上下文管理器会按此顺序清理。关闭时停止接收新调用、取消并等待活动任务、拒绝对应 Promise，然后解绑；`cancel_all()` 可只取消当前任务而不关闭桥。取消是协作式的，协程应在清理后继续传播 `CancelledError`。协程运行在事件循环线程，UI-only WebView 方法仍需 `view.dispatch`；阻塞调用应显式移入 executor，不能指望 `async def` 自动避免阻塞。包括 `KeyboardInterrupt` / `SystemExit` 在内的非取消 `BaseException` 会记录 critical 日志，以不含 traceback 的通用 `InternalError` 拒绝 Promise，事件循环继续处理后续调用。
 
 **取消协程不等于终止 executor 中的阻塞工作。** 对 `asyncio.to_thread` 或默认 executor，`close()` 会取消协程的等待并拒绝 Promise，但不会等待、关闭默认 executor，也无法强杀已经在运行的阻塞函数。文件保存、网络等需要严格退出语义的任务，应由应用自行管理 executor 和 `threading.Event` 取消标志，让阻塞函数在合适的边界检查标志并结束；退出时的 executor `shutdown` 也由应用负责。等待不可取消的工作可能阻塞 UI，`close(timeout)` 不会替这类工作提供强制超时。
 
@@ -193,13 +192,9 @@ with FramelessWindow(
     min_height=520,
     resizable=True,
     app_name="my-app",
-    bgcolor=0x0026120D,
-    shadow=True,
+    frame="round",
     dark_mode=True,
-    dwm_border=True,
-    dwm_border_color=None,
-    inner_border_width=1,
-    inner_border_color=0x0026120D,
+    bgcolor=0x0026120D,
 ) as window:
     window.bridge.expose(lambda: "ready", name="get_status")
     window.view.set_html("""
@@ -222,20 +217,37 @@ with FramelessWindow(width=800, height=600, resizable=False) as window:
 
 固定模式会禁用八方向缩放、`__window_start_resize()`、最大化按钮对应的 `__window_toggle_maximize()` 以及标题栏双击最大化，同时保留标题栏拖动和最小化。自定义标题栏应在此模式下隐藏或禁用最大化按钮。
 
-阴影、深色模式、DWM 外框和宿主内边框相互独立：
+#### 窗口框两套餐
 
-- `shadow=True`：启用系统 DWM 阴影；`False` 会禁用非客户区渲染并清除框架扩展。最大化时清除框架，还原时按此参数恢复。
-- `dark_mode=False`：是否设置 `DWMWA_USE_IMMERSIVE_DARK_MODE`。深色模式下 Windows 会使用更大、更深的系统阴影，需同时保持 `shadow=True`；此参数不会修改 HTML 配色，也不会改变其他边框参数。
-- `dwm_border=True`：显示 Windows 绘制的窗口外框；`False` 使用 `DWMWA_COLOR_NONE` 隐藏外框，但不改变阴影设置。
-- `dwm_border_color=None`：DWM 外框使用系统默认颜色；也可传入 32 位 Win32 `COLORREF`（与 `bgcolor` 一样为 BGR 字节顺序）。仅在 `dwm_border=True` 时生效。
-- `inner_border_width=1`：宿主内边框的像素宽度，必须是非负整数。WebView 内容按该宽度向四周内缩，0 表示没有内边框，最大化时自动取消内缩。
-- `inner_border_color=None`：宿主内边框使用 `bgcolor`；也可传入独立的 `COLORREF`。它不会影响 DWM 外框。
+`frame` 将圆角、边线和阴影作为同一个 DWM 渲染单元配置，只提供两种受支持的组合：
 
-DWM 外框没有公开的宽度设置接口，粗细由 Windows 和 DPI 决定；`DWMWA_VISIBLE_FRAME_BORDER_THICKNESS` 只能读取系统宽度，`DwmExtendFrameIntoClientArea` 的边距用于框架延伸和阴影，并不是外框线宽。需要任意像素宽度时使用 `inner_border_width`。
+| 预设 | 圆角 | 边线 | 阴影 |
+|---|---|---|---|
+| `round`（默认） | Windows 11 圆角 | 系统默认色 | 开启 |
+| `square_shadow` | 方角 | 不绘制 | 开启 |
+
+`dark_mode` 与预设独立，只设置 `DWMWA_USE_IMMERSIVE_DARK_MODE`，不会修改 HTML 配色。两档始终启用 DWM 非客户区渲染和阴影，不再公开 `shadow`、`dwm_border*` 或 `inner_border_*` 参数，避免拼出圆角无边线或无阴影等非支持组合。
+
+圆角残点来自 35 号 `DWMWA_CAPTION_COLOR` 框体底色在圆角弧区的露出。33 号 `DWMWA_WINDOW_CORNER_PREFERENCE` 控制圆角，34 号 `DWMWA_BORDER_COLOR` 控制边线色，35 号控制框体底色。DWM 颜色属性不读取 alpha；`COLOR_NONE` 在 34 号表示不画线，在 35 号则显示白色。caption 色由整个窗口共享，四角会联动，不能按角单独控制。因此 `round` 用系统边线封住弧区，`square_shadow` 用方角根除弧区；库不提供 `round_borderless`。
+
+Windows 10（build 22000 以下）不支持 33/34/35 号属性，相关 `DwmSetWindowAttribute` 错误会安全跳过。`round` 自动降级为方角、阴影和系统边，两档都保持系统原生的方角形态，不会出现圆角弧区残点。
+
+#### DPI 感知
+
+`FramelessWindow` 创建时请求 Per-Monitor V2。若进程 DPI 上下文已被 AppCompat shim 或系统“修复应用缩放”锁定，库会先回退到系统级 DPI 感知；回退仍失败时发出 `RuntimeWarning`，提示 Per-Monitor V2 未生效及可能出现 1px 几何误差。
+
+直接运行 `python.exe` 时默认可能是不感知（awareness=0，这是进程默认值而非库错误）。开发预览如需与打包产物一致，应在入口文件最顶部、导入 `pyminiwebview` 之前设置：
+
+```python
+import ctypes
+ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+
+import pyminiwebview
+```
 
 `window.view` 提供完整嵌入式 `WebView`，`window.bridge` 用于注册业务函数；`FramelessWindow.close()` 幂等，并销毁宿主、关闭 WebView、注销窗口类和释放画刷。创建、运行和关闭都应在同一 UI 线程执行。完整的拖动、边缘缩放、后台任务示例见 `examples/05_frameless_app/app.py`。
 
-文件对话框在 UI 线程调用；取消返回 `None`，`CommDlgExtendedError` 非零时抛出 `OSError`。保存对话框允许新文件，并提示覆盖已有文件。
+文件对话框在 UI 线程调用；取消返回 `None`，`CommDlgExtendedError` 非零时抛出 `OSError`。保存对话框允许新文件，并提示覆盖已有文件。`initial_file` 最长为 32767 个字符，超长时由 `ctypes` 抛出 `ValueError`。
 
 ```python
 from pyminiwebview_win32 import open_file_dialog, save_file_dialog
@@ -247,7 +259,7 @@ source = open_file_dialog(
 target = save_file_dialog(initial_file="new.txt")
 ```
 
-托盘图标使用完整 64 位 Win32 结构体和 `HWND_MESSAGE` 隐藏窗口。必须在 `run()` 所在线程创建和移除，退出时调用幂等的 `remove()`：
+托盘图标使用完整 64 位 Win32 结构体和 `HWND_MESSAGE` 隐藏窗口。`tooltip` 最长为 127 个 UTF-16 代码单元，超长会在创建前抛出 `ValueError`。必须在 `run()` 所在线程创建和移除，退出时调用幂等的 `remove()`：
 
 ```python
 from pyminiwebview_win32 import TrayIcon
@@ -368,6 +380,12 @@ GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.
 Win32 助手另需人工确认：打开对话框能选择已有文件、取消返回 `None`；保存对话框允许新文件并提示覆盖；托盘左右键触发回调，`remove()` 后无图标残留。
 
 ## CHANGELOG
+
+### 0.1.7
+
+- `FramelessWindow` 改用 `frame="round"` / `"square_shadow"` 两档窗口框预设，移除可拼出非支持组合的阴影、DWM 边线和宿主内边框公开参数；补充 Windows 10 降级与 DPI 锁定告警。
+- 修复 `AsyncBridge` 遇到 `BaseException` 时 JS Promise 永久挂起的问题，并保护事件循环；`Bridge` 新增幂等 `close()` 和上下文管理。
+- 修复关闭 WebView 时未消费 dispatch 链表节点的原生内存泄漏；完善顶部缩放 overlay、托盘 tooltip、文件对话框和示例清理边界。
 
 ### 0.1.6
 

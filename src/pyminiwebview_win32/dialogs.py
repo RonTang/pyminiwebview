@@ -81,7 +81,10 @@ def _file_dialog(save, hwnd_owner, title, filters, initial_dir, initial_file):
 
 def open_file_dialog(hwnd_owner=None, title="Open File", filters=None,
                      initial_dir=None, initial_file=None):
-    """Return the selected existing path, or None when the user cancels."""
+    """Return the selected existing path, or None when the user cancels.
+
+    ``initial_file`` is limited to 32767 characters by the Win32 buffer.
+    """
     return _file_dialog(
         False, hwnd_owner, title, filters, initial_dir, initial_file
     )
@@ -89,7 +92,10 @@ def open_file_dialog(hwnd_owner=None, title="Open File", filters=None,
 
 def save_file_dialog(hwnd_owner=None, title="Save File", filters=None,
                      initial_dir=None, initial_file=None):
-    """Return the selected save path, or None when the user cancels."""
+    """Return the selected save path, or None when the user cancels.
+
+    ``initial_file`` is limited to 32767 characters by the Win32 buffer.
+    """
     return _file_dialog(
         True, hwnd_owner, title, filters, initial_dir, initial_file
     )

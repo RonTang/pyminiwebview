@@ -320,19 +320,29 @@ def test_close_has_bounded_timeout_for_unkillable_coroutine():
     wait_until(lambda: not bridge._thread.is_alive())
 
 
-def test_base_exception_is_not_returned_as_business_error(fake_bridge):
+@pytest.mark.parametrize("error_type", [BaseException, KeyboardInterrupt, SystemExit])
+def test_base_exception_rejects_without_stopping_event_loop(fake_bridge, error_type):
     view, bridge = fake_bridge
-
-    class StopProcessing(BaseException):
-        pass
 
     @bridge.expose
     async def stop():
-        raise StopProcessing("stop")
+        raise error_type("stop")
 
-    view.bindings["stop"]("id", "[]")
-    wait_until(lambda: not bridge._tasks)
-    assert view.returns == []
+    @bridge.expose
+    async def still_alive():
+        return 42
+
+    view.bindings["stop"]("stop-id", "[]")
+    wait_until(lambda: len(view.returns) == 1)
+    assert decoded_returns(view)[0] == (
+        "stop-id", 1,
+        {"error": {"type": "InternalError", "message": error_type.__name__}},
+    )
+    assert bridge._thread.is_alive()
+
+    view.bindings["still_alive"]("alive-id", "[]")
+    wait_until(lambda: len(view.returns) == 2)
+    assert decoded_returns(view)[1] == ("alive-id", 0, 42)
 
 
 def test_one_loop_handles_1000_concurrent_calls_exactly_once(fake_bridge):
@@ -480,6 +490,58 @@ def test_real_webview_async_success_error_and_callback_release(tmp_path):
     del bridge
     gc.collect()
     assert function_ref() is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires WebView2 Runtime")
+def test_real_webview_base_exception_rejects_and_loop_survives(tmp_path):
+    import pyminiwebview
+
+    received = []
+    view = pyminiwebview.WebView(
+        user_data_folder=str(tmp_path / "webview-data")
+    )
+    bridge = AsyncBridge(view)
+
+    @bridge.expose
+    async def interrupt():
+        raise KeyboardInterrupt("stop")
+
+    @bridge.expose
+    async def answer():
+        return 42
+
+    @bridge.expose
+    async def finish(result):
+        received.append(result)
+        view.terminate()
+
+    view.set_html("""
+      <script>
+      const result = {};
+      interrupt().catch(error => {
+        result.error = error;
+        return answer();
+      }).then(value => {
+        result.after = value;
+        return finish(result);
+      });
+      </script>
+    """)
+    watchdog = threading.Timer(10, view.terminate)
+    watchdog.start()
+    try:
+        view.run()
+    finally:
+        watchdog.cancel()
+        bridge.close()
+        view.close()
+
+    assert received == [{
+        "error": {"error": {
+            "type": "InternalError", "message": "KeyboardInterrupt"
+        }},
+        "after": 42,
+    }]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires WebView2 Runtime")

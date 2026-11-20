@@ -11,6 +11,20 @@ from .js import _dumps_json
 _logger = logging.getLogger(__name__)
 
 
+class _BaseExceptionResult:
+    def __init__(self, error):
+        self.error = error
+
+
+async def _run_coroutine(coroutine):
+    try:
+        return await coroutine
+    except (Exception, asyncio.CancelledError):
+        raise
+    except BaseException as error:
+        return _BaseExceptionResult(error)
+
+
 class AsyncBridge:
     """Expose coroutine functions through a dedicated, reusable asyncio loop.
 
@@ -115,8 +129,9 @@ class AsyncBridge:
             ValueError: If a binding name is empty or already registered.
 
         ``KeyboardInterrupt``, ``SystemExit``, and other non-cancellation
-        ``BaseException`` subclasses are logged but are not converted into
-        ordinary business-error responses. Async generators are not supported.
+        ``BaseException`` subclasses are logged and reject the Promise with a
+        generic ``InternalError`` without stopping the event loop. Tracebacks
+        are not sent to the page. Async generators are not supported.
         """
         if name is not None:
             if isinstance(function_or_name, str):
@@ -193,14 +208,28 @@ class AsyncBridge:
                 RuntimeError("AsyncBridge is closed")
             ))
             return
-        task = self._loop.create_task(coroutine)
+        task = self._loop.create_task(_run_coroutine(coroutine))
         self._tasks[task] = (request_id, name)
         task.add_done_callback(self._task_done)
 
     def _task_done(self, task):
         request_id, name = self._tasks.pop(task)
         try:
-            response = _dumps_json(task.result())
+            result = task.result()
+            if isinstance(result, _BaseExceptionResult):
+                error = result.error
+                _logger.critical(
+                    "AsyncBridge call %r terminated by BaseException", name,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+                self._respond(request_id, 1, {
+                    "error": {
+                        "type": "InternalError",
+                        "message": type(error).__name__,
+                    }
+                })
+                return
+            response = _dumps_json(result)
         except asyncio.CancelledError:
             _logger.info("AsyncBridge call %r was cancelled", name)
             self._respond(request_id, 1, {
@@ -210,11 +239,17 @@ class AsyncBridge:
         except Exception as error:
             _logger.exception("AsyncBridge call %r failed", name)
             self._respond(request_id, 1, _error_result(error))
-        except BaseException:
+        except BaseException as error:
             _logger.critical(
                 "AsyncBridge call %r terminated by BaseException", name,
                 exc_info=True,
             )
+            self._respond(request_id, 1, {
+                "error": {
+                    "type": "InternalError",
+                    "message": type(error).__name__,
+                }
+            })
         else:
             if self._closed:
                 self._respond(request_id, 1, {

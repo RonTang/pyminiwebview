@@ -15,6 +15,7 @@ from pyminiwebview_win32 import TrayIcon, open_file_dialog, save_file_dialog
 
 
 WM_CLOSE = 0x0010
+WM_DESTROY = 0x0002
 GWLP_WNDPROC = -4
 SW_HIDE = 0
 SW_SHOW = 5
@@ -39,6 +40,8 @@ user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.ShowWindow.restype = wintypes.BOOL
 user32.IsWindowVisible.argtypes = [wintypes.HWND]
 user32.IsWindowVisible.restype = wintypes.BOOL
+user32.IsWindow.argtypes = [wintypes.HWND]
+user32.IsWindow.restype = wintypes.BOOL
 user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 user32.SetForegroundWindow.restype = wintypes.BOOL
 user32.CreatePopupMenu.argtypes = []
@@ -165,6 +168,8 @@ class TrayTextApp:
         }
 
     def save_text_file(self, content):
+        if not isinstance(content, str):
+            raise TypeError("content must be a string")
         path = save_file_dialog(
             hwnd_owner=self._owner(), title="保存 UTF-8 文本",
             filters=[("Text Files", "*.txt"), ("All Files", "*.*")],
@@ -228,6 +233,8 @@ class TrayTextApp:
         if message == WM_CLOSE:
             self.hide_window()
             return 0
+        if message == WM_DESTROY:
+            self.hwnd = None
         return user32.CallWindowProcW(
             self._old_wndproc, hwnd, message, wparam, lparam
         )
@@ -239,9 +246,10 @@ class TrayTextApp:
             if self.tray:
                 self.tray.remove()
                 self.tray = None
-            user32.SetWindowLongPtrW(
-                self.hwnd, GWLP_WNDPROC, self._old_wndproc
-            )
+            if user32.IsWindow(self.hwnd):
+                user32.SetWindowLongPtrW(
+                    self.hwnd, GWLP_WNDPROC, self._old_wndproc
+                )
             self.view.close()
 
 

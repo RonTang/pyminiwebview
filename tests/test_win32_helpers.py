@@ -1,6 +1,7 @@
 import ctypes
 import sys
 import threading
+import warnings
 from ctypes import wintypes
 
 import pytest
@@ -131,6 +132,10 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
             "__window_start_resize",
             "__window_ready",
         } <= set(window.bridge._names)
+        assert window._frame == "round"
+        assert window._overlay_wndproc(
+            window._resize_overlay, frameless._WM_ERASEBKGND, 0, 0
+        ) == 1
         window.view.set_html("<h1>Frameless helper</h1>")
         window.run()
         assert window.ready
@@ -211,35 +216,67 @@ def test_frameless_window_validates_dimensions():
         FramelessWindow(width=600, height=500, min_width=700)
     with pytest.raises(TypeError, match="resizable"):
         FramelessWindow(resizable=1)
-    with pytest.raises(TypeError, match="shadow"):
-        FramelessWindow(shadow=1)
     with pytest.raises(TypeError, match="dark_mode"):
         FramelessWindow(dark_mode=1)
-    with pytest.raises(TypeError, match="dwm_border"):
-        FramelessWindow(dwm_border=1)
-    with pytest.raises(ValueError, match="negative"):
-        FramelessWindow(inner_border_width=-1)
+    with pytest.raises(ValueError, match="round.*square_shadow"):
+        FramelessWindow(frame="round_borderless")
+    with pytest.raises(TypeError, match="shadow"):
+        FramelessWindow(shadow=True)
     with pytest.raises(TypeError, match="inner_border_width"):
-        FramelessWindow(inner_border_width=1.5)
-    with pytest.raises(ValueError, match="dwm_border_color.*32 bits"):
-        FramelessWindow(dwm_border_color=0x100000000)
-    with pytest.raises(ValueError, match="inner_border_color.*32 bits"):
-        FramelessWindow(inner_border_color=0x100000000)
+        FramelessWindow(inner_border_width=1)
+
+
+def test_frameless_dpi_access_denied_uses_system_awareness(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        frameless._user32, "SetProcessDpiAwarenessContext", lambda _context: False
+    )
+    monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(
+        frameless.ctypes.windll.shcore, "SetProcessDpiAwareness",
+        lambda level: calls.append(level) or 0,
+    )
+    frameless._enable_dpi_awareness()
+    assert calls == [2]
+
+
+def test_frameless_dpi_failed_fallback_warns(monkeypatch):
+    monkeypatch.setattr(
+        frameless._user32, "SetProcessDpiAwarenessContext", lambda _context: False
+    )
+    monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(
+        frameless.ctypes.windll.shcore, "SetProcessDpiAwareness",
+        lambda _level: -1,
+    )
+    monkeypatch.setattr(frameless, "_is_per_monitor_v2", lambda: False)
+    with pytest.warns(RuntimeWarning, match="Per-Monitor V2"):
+        frameless._enable_dpi_awareness()
+
+
+def test_frameless_dpi_does_not_warn_when_already_per_monitor_v2(monkeypatch):
+    monkeypatch.setattr(
+        frameless._user32, "SetProcessDpiAwarenessContext", lambda _context: False
+    )
+    monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(
+        frameless.ctypes.windll.shcore, "SetProcessDpiAwareness",
+        lambda _level: -1,
+    )
+    monkeypatch.setattr(frameless, "_is_per_monitor_v2", lambda: True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        frameless._enable_dpi_awareness()
 
 
 @pytest.mark.parametrize(
-    "zoomed, shadow, expected_width",
-    [
-        (False, True, 1),
-        (True, True, 0),
-        (False, False, 0),
-    ],
+    "zoomed, expected_width",
+    [(False, 1), (True, 0)],
 )
-def test_frameless_uses_dwm_frame_when_shadow_enabled_and_restored(
-        monkeypatch, zoomed, shadow, expected_width):
+def test_frameless_uses_dwm_frame_when_restored(
+        monkeypatch, zoomed, expected_width):
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
-    window._shadow = shadow
     window._dwm_frame_width = None
     calls = []
 
@@ -287,18 +324,9 @@ def test_frameless_applies_dark_mode(monkeypatch, dark_mode, expected):
     )]
 
 
-@pytest.mark.parametrize(
-    "shadow, expected_policy",
-    [
-        (True, frameless._DWMNCRP_ENABLED),
-        (False, frameless._DWMNCRP_DISABLED),
-    ],
-)
-def test_frameless_shadow_controls_nonclient_rendering_policy(
-        monkeypatch, shadow, expected_policy):
+def test_frameless_always_enables_nonclient_rendering_policy(monkeypatch):
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
-    window._shadow = shadow
     calls = []
 
     def set_attribute(hwnd, attribute, pointer, size):
@@ -312,25 +340,21 @@ def test_frameless_shadow_controls_nonclient_rendering_policy(
     monkeypatch.setattr(frameless._dwmapi, "DwmSetWindowAttribute", set_attribute)
     window._apply_dwm_frame_policy()
     assert calls == [(
-        123, frameless._DWMWA_NCRENDERING_POLICY, expected_policy, 4
+        123, frameless._DWMWA_NCRENDERING_POLICY, frameless._DWMNCRP_ENABLED, 4
     )]
 
 
 @pytest.mark.parametrize(
-    "dwm_border, dwm_border_color, expected_color",
+    "frame, expected_color",
     [
-        (False, None, frameless._DWMWA_COLOR_NONE),
-        (False, 0x00112233, frameless._DWMWA_COLOR_NONE),
-        (True, None, frameless._DWMWA_COLOR_DEFAULT),
-        (True, 0x00112233, 0x00112233),
+        ("round", frameless._DWMWA_COLOR_DEFAULT),
+        ("square_shadow", frameless._DWMWA_COLOR_NONE),
     ],
 )
-def test_frameless_applies_dwm_border_color(
-        monkeypatch, dwm_border, dwm_border_color, expected_color):
+def test_frameless_applies_dwm_border_color(monkeypatch, frame, expected_color):
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
-    window._dwm_border = dwm_border
-    window._dwm_border_color = dwm_border_color
+    window._frame = frame
     window._applied_dwm_border_color = None
     calls = []
 
@@ -348,14 +372,12 @@ def test_frameless_applies_dwm_border_color(
     assert calls == [(123, frameless._DWMWA_BORDER_COLOR, expected_color, 4)]
 
 
-@pytest.mark.parametrize("zoomed, border", [(False, 3), (True, 0)])
-def test_frameless_inner_border_width_insets_webview(monkeypatch, zoomed, border):
+def test_frameless_webview_fills_client_area(monkeypatch):
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
     window.view = object()
     window._widget = 456
     window._resize_overlay = None
-    window._inner_border_width = 3
     calls = []
 
     def client_rect(_hwnd, pointer):
@@ -366,14 +388,13 @@ def test_frameless_inner_border_width_insets_webview(monkeypatch, zoomed, border
         rect.bottom = 80
         return True
 
-    monkeypatch.setattr(frameless._user32, "IsZoomed", lambda _hwnd: zoomed)
     monkeypatch.setattr(frameless._user32, "GetClientRect", client_rect)
     monkeypatch.setattr(
         frameless._user32, "SetWindowPos", lambda *args: calls.append(args)
     )
     window._layout_webview()
     assert calls == [(
-        456, None, border, border, 100 - 2 * border, 80 - 2 * border,
+        456, None, 0, 0, 100, 80,
         frameless._SWP_NOZORDER | frameless._SWP_NOACTIVATE,
     )]
 
@@ -393,6 +414,18 @@ def test_frameless_native_overlay_forwards_resize_to_host(monkeypatch):
     assert calls == [(
         123, frameless._WM_NCLBUTTONDOWN, frameless._HTTOPLEFT, 789
     )]
+
+
+def test_frameless_destroy_ignores_already_closed_view():
+    class ClosedView:
+        def terminate(self):
+            raise RuntimeError("closed")
+
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    window.view = ClosedView()
+    assert window._wndproc(123, frameless._WM_DESTROY, 0, 0) == 0
+    assert window.hwnd is None
 
 
 @pytest.mark.parametrize("size, expected_layouts", [(0, 1), (1, 0), (2, 1)])
@@ -542,3 +575,40 @@ def test_tray_icon_create_failure_unregisters_window_class(monkeypatch):
 
     assert len(unregister_calls) == 1
     assert unregister_calls[0][0].startswith("PyMiniWebViewTray_")
+
+
+def test_tray_icon_rejects_oversized_tooltip_before_creating_window(monkeypatch):
+    monkeypatch.setattr(
+        tray._kernel32, "GetModuleHandleW",
+        lambda *_args: pytest.fail("must not create native resources"),
+    )
+    with pytest.raises(ValueError, match="127"):
+        TrayIcon(tooltip="x" * 128)
+    with pytest.raises(ValueError, match="127"):
+        TrayIcon(tooltip="😀" * 64)
+
+
+def test_tray_icon_remove_logs_destroy_failure_and_cleans_up(
+        monkeypatch, caplog):
+    icon = TrayIcon.__new__(TrayIcon)
+    icon._hwnd = 123
+    icon._icon_added = False
+    icon._class_registered = True
+    icon._class_name = "PyMiniWebViewTray_Test"
+    icon._hinstance = 456
+    unregister_calls = []
+    monkeypatch.setattr(tray._user32, "DestroyWindow", lambda _hwnd: False)
+    monkeypatch.setattr(tray.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(
+        tray._user32, "UnregisterClassW",
+        lambda *args: unregister_calls.append(args) or True,
+    )
+
+    with caplog.at_level("WARNING", logger="pyminiwebview_win32.tray"):
+        icon.remove()
+        icon.remove()
+
+    assert "Win32 error 5" in caplog.text
+    assert icon._hwnd is None
+    assert not icon._class_registered
+    assert unregister_calls == [("PyMiniWebViewTray_Test", 456)]

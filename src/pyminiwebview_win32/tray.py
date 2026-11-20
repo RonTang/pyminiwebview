@@ -1,6 +1,10 @@
 import ctypes
+import logging
 import uuid
 from ctypes import wintypes
+
+
+_logger = logging.getLogger(__name__)
 
 _NIM_ADD = 0
 _NIM_DELETE = 2
@@ -101,6 +105,8 @@ class TrayIcon:
 
     def __init__(self, parent_hwnd=None, tooltip="App", on_click=None,
                  on_left_click=None, on_right_click=None):
+        if len(tooltip.encode("utf-16-le")) // 2 > 127:
+            raise ValueError("tooltip must fit in 127 UTF-16 code units")
         self._on_click = on_click
         self._on_left_click = on_left_click
         self._on_right_click = on_right_click
@@ -178,7 +184,10 @@ class TrayIcon:
                 )
                 self._icon_added = False
             if not _user32.DestroyWindow(self._hwnd):
-                raise ctypes.WinError(ctypes.get_last_error())
+                _logger.warning(
+                    "TrayIcon window destruction failed (Win32 error %s)",
+                    ctypes.get_last_error(),
+                )
             self._hwnd = None
         if self._class_registered:
             _user32.UnregisterClassW(self._class_name, self._hinstance)

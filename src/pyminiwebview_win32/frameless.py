@@ -1,5 +1,6 @@
 import ctypes
 import time
+import warnings
 from ctypes import wintypes
 
 import pyminiwebview
@@ -9,6 +10,7 @@ _WM_DESTROY = 0x0002
 _WM_MOVE = 0x0003
 _WM_SIZE = 0x0005
 _WM_CLOSE = 0x0010
+_WM_ERASEBKGND = 0x0014
 _WM_GETMINMAXINFO = 0x0024
 _WM_NCDESTROY = 0x0082
 _WM_NCCALCSIZE = 0x0083
@@ -43,8 +45,8 @@ _DWMWA_WINDOW_CORNER_PREFERENCE = 33
 _DWMWA_BORDER_COLOR = 34
 _DWMWA_COLOR_NONE = 0xFFFFFFFE
 _DWMWA_COLOR_DEFAULT = 0xFFFFFFFF
-_DWMNCRP_DISABLED = 1
 _DWMNCRP_ENABLED = 2
+_DWMWCP_DONOTROUND = 1
 _DWMWCP_ROUND = 2
 _HTCLIENT = 1
 _HTCAPTION = 2
@@ -188,6 +190,10 @@ _user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
 _user32.UnregisterClassW.restype = wintypes.BOOL
 _user32.SetProcessDpiAwarenessContext.argtypes = [wintypes.HANDLE]
 _user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
+_user32.GetThreadDpiAwarenessContext.argtypes = []
+_user32.GetThreadDpiAwarenessContext.restype = wintypes.HANDLE
+_user32.AreDpiAwarenessContextsEqual.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+_user32.AreDpiAwarenessContextsEqual.restype = wintypes.BOOL
 _kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
 _kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 _gdi32.CreateSolidBrush.argtypes = [wintypes.DWORD]
@@ -209,8 +215,43 @@ except AttributeError:
     pass
 
 
+def _is_per_monitor_v2():
+    try:
+        context = _user32.GetThreadDpiAwarenessContext()
+        return bool(_user32.AreDpiAwarenessContextsEqual(
+            context, ctypes.c_void_p(-4)
+        ))
+    except (AttributeError, OSError):
+        return False
+
+
+def _enable_dpi_awareness():
+    ctypes.set_last_error(0)
+    if _user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+        return
+    error = ctypes.get_last_error()
+    if error != _ERROR_ACCESS_DENIED:
+        raise ctypes.WinError(error)
+    try:
+        result = ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        result = -1
+    if result != 0 and not _is_per_monitor_v2():
+        warnings.warn(
+            "Per-Monitor V2 DPI awareness was not enabled because the process "
+            "DPI context is locked; window geometry may be off by 1px",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
 class FramelessWindow:
-    """Own a borderless Win32 host, an embedded WebView, and its JS controls."""
+    """Own a borderless Win32 host, an embedded WebView, and its JS controls.
+
+    ``frame="round"`` selects rounded corners, the system border color, and a
+    shadow. ``frame="square_shadow"`` selects square corners, no border, and a
+    shadow. On Windows 10, unsupported DWM attributes are ignored safely.
+    """
 
     def __init__(
         self,
@@ -223,13 +264,9 @@ class FramelessWindow:
         resizable=True,
         app_name="pyminiwebview",
         debug=False,
-        bgcolor=0xFFFFFF,
-        shadow=True,
+        frame="round",
         dark_mode=False,
-        dwm_border=True,
-        dwm_border_color=None,
-        inner_border_width=1,
-        inner_border_color=None,
+        bgcolor=0xFFFFFF,
         user_data_folder=None,
         clipboard_permission="default",
         on_maximize_change=None,
@@ -240,27 +277,10 @@ class FramelessWindow:
             raise ValueError("Minimum dimensions must not exceed initial dimensions")
         if not isinstance(resizable, bool):
             raise TypeError("resizable must be a bool")
-        if not isinstance(shadow, bool):
-            raise TypeError("shadow must be a bool")
         if not isinstance(dark_mode, bool):
             raise TypeError("dark_mode must be a bool")
-        if not isinstance(dwm_border, bool):
-            raise TypeError("dwm_border must be a bool")
-        if not isinstance(inner_border_width, int) or isinstance(
-            inner_border_width, bool
-        ):
-            raise TypeError("inner_border_width must be an integer")
-        if inner_border_width < 0:
-            raise ValueError("inner_border_width must not be negative")
-        for name, color in (
-            ("dwm_border_color", dwm_border_color),
-            ("inner_border_color", inner_border_color),
-        ):
-            if color is not None:
-                if not isinstance(color, int) or isinstance(color, bool):
-                    raise TypeError(f"{name} must be an integer COLORREF or None")
-                if not 0 <= color <= 0xFFFFFFFF:
-                    raise ValueError(f"{name} must fit in 32 bits")
+        if frame not in ("round", "square_shadow"):
+            raise ValueError('frame must be "round" or "square_shadow"')
         self.hwnd = None
         self.view = None
         self.bridge = None
@@ -275,15 +295,11 @@ class FramelessWindow:
         self._resizable = resizable
         self._app_name = app_name
         self._debug = debug
-        self._bgcolor = bgcolor
-        self._shadow = shadow
+        self._frame = frame
         self._dark_mode = dark_mode
-        self._dwm_border = dwm_border
-        self._dwm_border_color = dwm_border_color
+        self._bgcolor = bgcolor
         self._dwm_frame_width = None
         self._applied_dwm_border_color = None
-        self._inner_border_width = inner_border_width
-        self._inner_border_color = inner_border_color
         self._user_data_folder = user_data_folder
         self._clipboard_permission = clipboard_permission
         self._class_name = f"PyMiniWebViewFrameless_{id(self):x}"
@@ -327,7 +343,7 @@ class FramelessWindow:
         return max(1, value - 1)
 
     def _extend_dwm_frame(self):
-        width = int(self._shadow and not _user32.IsZoomed(self.hwnd))
+        width = int(not _user32.IsZoomed(self.hwnd))
         if width == self._dwm_frame_width:
             return
         margins = _MARGINS(width, width, 0, width)
@@ -341,8 +357,7 @@ class FramelessWindow:
         )
 
     def _apply_dwm_frame_policy(self):
-        policy = _DWMNCRP_ENABLED if self._shadow else _DWMNCRP_DISABLED
-        value = ctypes.c_int(policy)
+        value = ctypes.c_int(_DWMNCRP_ENABLED)
         _dwmapi.DwmSetWindowAttribute(
             self.hwnd, _DWMWA_NCRENDERING_POLICY, ctypes.byref(value), 4
         )
@@ -353,13 +368,13 @@ class FramelessWindow:
             self.hwnd, _DWMWA_BORDER_COLOR, ctypes.byref(value), 4
         )
 
+    def _resolve_border_color(self):
+        if self._frame == "square_shadow":
+            return _DWMWA_COLOR_NONE
+        return _DWMWA_COLOR_DEFAULT
+
     def _apply_dwm_border_color(self):
-        if not self._dwm_border:
-            color = _DWMWA_COLOR_NONE
-        elif self._dwm_border_color is not None:
-            color = self._dwm_border_color
-        else:
-            color = _DWMWA_COLOR_DEFAULT
+        color = self._resolve_border_color()
         if color == self._applied_dwm_border_color:
             return
         self._set_dwm_border_color(color)
@@ -397,6 +412,8 @@ class FramelessWindow:
         _user32.ShowWindow(self._resize_overlay, _SW_SHOWNOACTIVATE)
 
     def _overlay_wndproc(self, hwnd, message, wparam, lparam):
+        if message == _WM_ERASEBKGND:
+            return 1
         if message == _WM_NCHITTEST and self.hwnd:
             return self._native_hit_test(lparam)
         if (
@@ -447,27 +464,17 @@ class FramelessWindow:
         rect = wintypes.RECT()
         if not _user32.GetClientRect(self.hwnd, ctypes.byref(rect)):
             return
-        border = 0 if _user32.IsZoomed(self.hwnd) else self._inner_border_width
-        width = max(0, rect.right - rect.left - 2 * border)
-        height = max(0, rect.bottom - rect.top - 2 * border)
+        width = max(0, rect.right - rect.left)
+        height = max(0, rect.bottom - rect.top)
         _user32.SetWindowPos(
-            self._widget, None, border, border, width, height,
+            self._widget, None, 0, 0, width, height,
             _SWP_NOZORDER | _SWP_NOACTIVATE,
         )
         self._layout_native_resize(rect.right - rect.left)
 
     def _create(self):
-        ctypes.set_last_error(0)
-        if not _user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
-            error = ctypes.get_last_error()
-            if error != _ERROR_ACCESS_DENIED:
-                raise ctypes.WinError(error)
-        host_color = (
-            self._inner_border_color
-            if self._inner_border_color is not None
-            else self._bgcolor
-        )
-        self._background_brush = _gdi32.CreateSolidBrush(host_color)
+        _enable_dpi_awareness()
+        self._background_brush = _gdi32.CreateSolidBrush(self._bgcolor)
         if not self._background_brush:
             raise ctypes.WinError(ctypes.get_last_error())
         window_class = _WNDCLASSW()
@@ -501,7 +508,9 @@ class FramelessWindow:
         if not self.hwnd:
             raise ctypes.WinError(ctypes.get_last_error())
 
-        corner = ctypes.c_int(_DWMWCP_ROUND)
+        corner = ctypes.c_int(
+            _DWMWCP_ROUND if self._frame == "round" else _DWMWCP_DONOTROUND
+        )
         _dwmapi.DwmSetWindowAttribute(
             self.hwnd, _DWMWA_WINDOW_CORNER_PREFERENCE, ctypes.byref(corner), 4
         )
@@ -691,6 +700,9 @@ class FramelessWindow:
                     params.rgrc[0].bottom -= padding
             return 0
         if message == _WM_NCACTIVATE:
+            border_color = self._resolve_border_color()
+            self._set_dwm_border_color(border_color)
+            self._applied_dwm_border_color = border_color
             return _user32.DefWindowProcW(hwnd, message, wparam, -1)
         if message in (_WM_NCUAHDRAWCAPTION, _WM_NCUAHDRAWFRAME):
             return 0
@@ -737,7 +749,10 @@ class FramelessWindow:
         elif message == _WM_DESTROY:
             self.hwnd = None
             if self.view:
-                self.view.terminate()
+                try:
+                    self.view.terminate()
+                except RuntimeError:
+                    pass
             return 0
         return _user32.DefWindowProcW(hwnd, message, wparam, lparam)
 
@@ -752,11 +767,13 @@ class FramelessWindow:
             _user32.ReleaseCapture()
         if self.hwnd:
             _user32.DestroyWindow(self.hwnd)
+        if self.bridge:
+            self.bridge.close()
+            self.bridge = None
         if self.view:
             self.view.close()
             self.view = None
         self._widget = None
-        self.bridge = None
         self.ready = False
         if self._class_atom:
             _user32.UnregisterClassW(self._class_name, self._hinstance)
