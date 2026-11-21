@@ -3,6 +3,7 @@ import sys
 import threading
 import warnings
 from ctypes import wintypes
+from types import SimpleNamespace
 
 import pytest
 
@@ -132,9 +133,10 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
             "__window_start_resize",
             "__window_ready",
         } <= set(window.bridge._names)
-        assert window._frame == "round"
+        assert window._frame == "normal"
         assert window._overlay_wndproc(
-            window._resize_overlay, frameless._WM_ERASEBKGND, 0, 0
+            window._resize_overlays["t"],
+            frameless._WM_ERASEBKGND, 0, 0
         ) == 1
         window.view.set_html("<h1>Frameless helper</h1>")
         window.run()
@@ -157,10 +159,10 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
         window.on_maximize_change = None
         assert window.toggle_maximize() is True
         assert user32.IsZoomed(hwnd)
-        assert not user32.IsWindowVisible(window._resize_overlay)
+        assert not user32.IsWindowVisible(window._resize_overlays["t"])
         assert window.toggle_maximize() is False
         assert not user32.IsZoomed(hwnd)
-        assert user32.IsWindowVisible(window._resize_overlay)
+        assert user32.IsWindowVisible(window._resize_overlays["t"])
 
         rect = wintypes.RECT()
         assert user32.GetWindowRect(hwnd, ctypes.byref(rect))
@@ -237,6 +239,197 @@ def test_frameless_maximize_uses_monitor_relative_position(monkeypatch):
     assert (info.ptMaxSize.x, info.ptMaxSize.y) == (1860, 1040)
 
 
+def test_frameless_maximized_client_area_uses_proposed_monitor(monkeypatch):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._frame = "normal"
+    params = frameless._NCCALCSIZE_PARAMS()
+    params.rgrc[0] = wintypes.RECT(1920, 0, 3840, 1080)
+    calls = []
+
+    monkeypatch.setattr(frameless._user32, "IsZoomed", lambda _hwnd: True)
+    monkeypatch.setattr(
+        frameless._user32,
+        "MonitorFromWindow",
+        lambda *_args: pytest.fail("must not use the restored window monitor"),
+    )
+
+    def monitor_from_rect(pointer, flags):
+        rect = ctypes.cast(pointer, ctypes.POINTER(wintypes.RECT)).contents
+        calls.append(((rect.left, rect.top, rect.right, rect.bottom), flags))
+        return 99
+
+    def get_monitor_info(monitor, pointer):
+        assert monitor == 99
+        info = ctypes.cast(
+            pointer, ctypes.POINTER(frameless._MONITORINFO)
+        ).contents
+        info.rcWork = wintypes.RECT(1920, 40, 3840, 1080)
+        return True
+
+    monkeypatch.setattr(frameless._user32, "MonitorFromRect", monitor_from_rect)
+    monkeypatch.setattr(frameless._user32, "GetMonitorInfoW", get_monitor_info)
+
+    assert window._wndproc(
+        123, frameless._WM_NCCALCSIZE, 1, ctypes.addressof(params)
+    ) == 0
+    assert calls == [((1920, 0, 3840, 1080), frameless._MONITOR_DEFAULTTONEAREST)]
+    assert (
+        params.rgrc[0].left,
+        params.rgrc[0].top,
+        params.rgrc[0].right,
+        params.rgrc[0].bottom,
+    ) == (1920, 40, 3840, 1080)
+
+
+@pytest.mark.parametrize(
+    "windows_10, expected_corner",
+    [
+        (False, frameless._DWMWCP_ROUND),
+        (True, frameless._DWMWCP_DONOTROUND),
+    ],
+)
+def test_frameless_normal_preserves_overlapped_window_style(
+        monkeypatch, windows_10, expected_corner):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._frame = "normal"
+    window._resizable = True
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: windows_10)
+    assert window._window_style() == frameless._WS_OVERLAPPEDWINDOW
+    assert window._window_style() & 0x00C00000 == 0x00C00000
+    assert window._corner_preference() == expected_corner
+
+
+@pytest.mark.parametrize(
+    "frame, windows_10, expected_style, expected_dwm",
+    [
+        ("rect", False, frameless._WS_OVERLAPPEDWINDOW, False),
+        ("rect", True, frameless._WS_OVERLAPPEDWINDOW, False),
+        ("rect_corner", False, frameless._WS_OVERLAPPEDWINDOW, False),
+        ("rect_corner", True, frameless._WS_OVERLAPPEDWINDOW, False),
+        ("rect_shadow", False, frameless._WS_OVERLAPPEDWINDOW, True),
+        ("rect_shadow", True, frameless._WS_OVERLAPPEDWINDOW, False),
+    ],
+)
+def test_frameless_rect_uses_platform_specific_style(
+        monkeypatch, frame, windows_10, expected_style, expected_dwm):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._frame = frame
+    window._resizable = True
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: windows_10)
+    assert window._use_dwm_frame() is expected_dwm
+    assert window._window_style() == expected_style
+    assert window._window_style() & frameless._WS_CAPTION
+    assert window._corner_preference() == frameless._DWMWCP_DONOTROUND
+
+
+def test_frameless_win10_normal_uses_full_client_area(monkeypatch):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._frame = "normal"
+    params = frameless._NCCALCSIZE_PARAMS()
+    params.rgrc[0] = wintypes.RECT(100, 100, 860, 640)
+    lparam = ctypes.addressof(params)
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: True)
+    monkeypatch.setattr(frameless._user32, "IsZoomed", lambda _hwnd: False)
+
+    monkeypatch.setattr(window, "_ring_padding", lambda: 8)
+    monkeypatch.setattr(
+        frameless._user32,
+        "DefWindowProcW",
+        lambda *_args: pytest.fail("must remove the complete native caption"),
+    )
+    assert window._wndproc(
+        123, frameless._WM_NCCALCSIZE, 1, lparam
+    ) == 0
+    assert (
+        params.rgrc[0].left,
+        params.rgrc[0].top,
+        params.rgrc[0].right,
+        params.rgrc[0].bottom,
+    ) == (100, 100, 860, 640)
+
+
+@pytest.mark.parametrize(
+    "frame, windows_10",
+    [
+        ("rect", False), ("rect", True),
+        ("rect_corner", False), ("rect_corner", True), ("rect_shadow", True),
+    ],
+)
+def test_frameless_rect_uses_full_client_area(monkeypatch, frame, windows_10):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._frame = frame
+    params = frameless._NCCALCSIZE_PARAMS()
+    params.rgrc[0] = wintypes.RECT(100, 100, 860, 640)
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: windows_10)
+    monkeypatch.setattr(frameless._user32, "IsZoomed", lambda _hwnd: False)
+    monkeypatch.setattr(
+        frameless._user32,
+        "DefWindowProcW",
+        lambda *_args: pytest.fail("must not reserve a system frame"),
+    )
+
+    assert window._wndproc(
+        123, frameless._WM_NCCALCSIZE, 1, ctypes.addressof(params)
+    ) == 0
+    assert (
+        params.rgrc[0].left,
+        params.rgrc[0].top,
+        params.rgrc[0].right,
+        params.rgrc[0].bottom,
+    ) == (100, 100, 860, 640)
+
+
+def test_frameless_win10_normal_uses_overlay_hit_testing(monkeypatch):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._frame = "normal"
+    calls = []
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: True)
+    monkeypatch.setattr(
+        window,
+        "_native_hit_test",
+        lambda lparam: calls.append(lparam) or frameless._HTBOTTOMRIGHT,
+    )
+    monkeypatch.setattr(
+        frameless._user32,
+        "DefWindowProcW",
+        lambda *_args: pytest.fail("WebView requires overlay hit testing"),
+    )
+
+    assert window._wndproc(
+        123, frameless._WM_NCHITTEST, 0, 789
+    ) == frameless._HTBOTTOMRIGHT
+    assert calls == [789]
+
+
+@pytest.mark.parametrize(
+    "frame, windows_10",
+    [
+        ("rect", False), ("rect", True),
+        ("rect_corner", False), ("rect_corner", True), ("rect_shadow", True),
+    ],
+)
+def test_frameless_rect_uses_custom_hit_testing(monkeypatch, frame, windows_10):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._frame = frame
+    calls = []
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: windows_10)
+    monkeypatch.setattr(
+        window,
+        "_native_hit_test",
+        lambda lparam: calls.append(lparam) or frameless._HTLEFT,
+    )
+    monkeypatch.setattr(
+        frameless._user32,
+        "DefWindowProcW",
+        lambda *_args: pytest.fail("must not use the system frame hit test"),
+    )
+
+    assert window._wndproc(
+        123, frameless._WM_NCHITTEST, 0, 789
+    ) == frameless._HTLEFT
+    assert calls == [789]
+
+
 def test_frameless_window_validates_dimensions():
     with pytest.raises(ValueError, match="positive"):
         FramelessWindow(width=0)
@@ -246,12 +439,21 @@ def test_frameless_window_validates_dimensions():
         FramelessWindow(resizable=1)
     with pytest.raises(TypeError, match="dark_mode"):
         FramelessWindow(dark_mode=1)
-    with pytest.raises(ValueError, match="round.*square_shadow"):
+    with pytest.raises(ValueError, match="normal.*rect.*rect_corner.*rect_shadow"):
         FramelessWindow(frame="round_borderless")
     with pytest.raises(TypeError, match="shadow"):
         FramelessWindow(shadow=True)
     with pytest.raises(TypeError, match="inner_border_width"):
         FramelessWindow(inner_border_width=1)
+
+
+@pytest.mark.parametrize(
+    "alias, canonical", [("round", "normal"), ("square_shadow", "rect_shadow")]
+)
+def test_frameless_legacy_frame_aliases(monkeypatch, alias, canonical):
+    monkeypatch.setattr(FramelessWindow, "_create", lambda self: None)
+    window = FramelessWindow(frame=alias)
+    assert window._frame == canonical
 
 
 def test_frameless_dpi_access_denied_uses_system_awareness(monkeypatch):
@@ -298,13 +500,25 @@ def test_frameless_dpi_does_not_warn_when_already_per_monitor_v2(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "zoomed, expected_width",
-    [(False, 1), (True, 0)],
+    "zoomed, frame, windows_10, expected_width, expected_top, expected_side",
+    [
+        (False, "normal", False, 1, 0, 1),
+        (True, "normal", False, 0, 0, 0),
+        (False, "normal", True, 1, 1, 0),
+        (False, "rect", False, 0, 0, 0),
+        (False, "rect", True, 0, 0, 0),
+        (False, "rect_corner", False, 0, 0, 0),
+        (False, "rect_corner", True, 0, 0, 0),
+        (False, "rect_shadow", False, 1, 0, 1),
+        (False, "rect_shadow", True, 1, 1, 0),
+    ],
 )
 def test_frameless_uses_dwm_frame_when_restored(
-        monkeypatch, zoomed, expected_width):
+        monkeypatch, zoomed, frame, windows_10, expected_width, expected_top,
+        expected_side):
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
+    window._frame = frame
     window._dwm_frame_width = None
     calls = []
 
@@ -321,13 +535,65 @@ def test_frameless_uses_dwm_frame_when_restored(
         ))
         return 0
 
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: windows_10)
     monkeypatch.setattr(frameless._user32, "IsZoomed", lambda _hwnd: zoomed)
     monkeypatch.setattr(frameless._dwmapi, "DwmExtendFrameIntoClientArea", extend)
     window._extend_dwm_frame()
     window._extend_dwm_frame()
     assert calls == [(
-        123, expected_width, expected_width, 0, expected_width
+        123, expected_side, expected_side, expected_top, expected_side
     )]
+
+
+def test_frameless_dwm_updates_wait_for_valid_hwnd(monkeypatch):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = None
+    window._dwm_frame_width = None
+    window._applied_dwm_border_color = None
+    monkeypatch.setattr(
+        frameless._dwmapi,
+        "DwmExtendFrameIntoClientArea",
+        lambda *_args: pytest.fail("must not extend a null HWND"),
+    )
+    monkeypatch.setattr(
+        window,
+        "_set_dwm_border_color",
+        lambda _color: pytest.fail("must not color a null HWND"),
+    )
+
+    window._extend_dwm_frame()
+    window._apply_dwm_border_color()
+    assert window._dwm_frame_width is None
+    assert window._applied_dwm_border_color is None
+
+
+def test_frameless_reveal_reapplies_cached_dwm_frame(monkeypatch):
+    class View:
+        def set_focus(self):
+            pass
+
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    window.view = View()
+    window.ready = False
+    window.on_maximize_change = None
+    window._dwm_frame_width = 1
+    window._update_win10_normal_border = lambda: None
+    calls = []
+    monkeypatch.setattr(frameless._user32, "ShowWindow", lambda *_args: True)
+    monkeypatch.setattr(frameless._user32, "UpdateWindow", lambda *_args: True)
+    monkeypatch.setattr(
+        frameless._user32, "SetForegroundWindow", lambda *_args: True
+    )
+
+    def extend_frame():
+        calls.append(window._dwm_frame_width)
+        window._dwm_frame_width = 1
+
+    monkeypatch.setattr(window, "_extend_dwm_frame", extend_frame)
+    assert window.reveal() is True
+    assert calls == [None]
+    assert window.ready
 
 
 @pytest.mark.parametrize("dark_mode, expected", [(True, 1), (False, 0)])
@@ -352,9 +618,20 @@ def test_frameless_applies_dark_mode(monkeypatch, dark_mode, expected):
     )]
 
 
-def test_frameless_always_enables_nonclient_rendering_policy(monkeypatch):
+@pytest.mark.parametrize(
+    "frame, expected",
+    [
+        ("normal", frameless._DWMNCRP_ENABLED),
+        ("rect", frameless._DWMNCRP_ENABLED),
+        ("rect_corner", frameless._DWMNCRP_DISABLED),
+        ("rect_shadow", frameless._DWMNCRP_ENABLED),
+    ],
+)
+def test_frameless_applies_nonclient_rendering_policy(
+        monkeypatch, frame, expected):
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
+    window._frame = frame
     calls = []
 
     def set_attribute(hwnd, attribute, pointer, size):
@@ -368,18 +645,35 @@ def test_frameless_always_enables_nonclient_rendering_policy(monkeypatch):
     monkeypatch.setattr(frameless._dwmapi, "DwmSetWindowAttribute", set_attribute)
     window._apply_dwm_frame_policy()
     assert calls == [(
-        123, frameless._DWMWA_NCRENDERING_POLICY, frameless._DWMNCRP_ENABLED, 4
+        123, frameless._DWMWA_NCRENDERING_POLICY, expected, 4
     )]
 
 
+@pytest.mark.parametrize("build, expected", [(19045, True), (22000, False)])
+def test_frameless_detects_windows_10(monkeypatch, build, expected):
+    monkeypatch.setattr(
+        frameless.sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(build=build),
+    )
+    assert frameless._is_windows_10() is expected
+
+
 @pytest.mark.parametrize(
-    "frame, expected_color",
+    "frame, windows_10, expected_color",
     [
-        ("round", frameless._DWMWA_COLOR_DEFAULT),
-        ("square_shadow", frameless._DWMWA_COLOR_NONE),
+        ("normal", False, frameless._DWMWA_COLOR_DEFAULT),
+        ("normal", True, frameless._DWMWA_COLOR_DEFAULT),
+        ("rect", False, frameless._DWMWA_COLOR_NONE),
+        ("rect", True, frameless._DWMWA_COLOR_DEFAULT),
+        ("rect_corner", False, frameless._DWMWA_COLOR_NONE),
+        ("rect_corner", True, frameless._DWMWA_COLOR_DEFAULT),
+        ("rect_shadow", False, frameless._DWMWA_COLOR_NONE),
+        ("rect_shadow", True, frameless._DWMWA_COLOR_DEFAULT),
     ],
 )
-def test_frameless_applies_dwm_border_color(monkeypatch, frame, expected_color):
+def test_frameless_applies_dwm_border_color(
+        monkeypatch, frame, windows_10, expected_color):
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
     window._frame = frame
@@ -394,18 +688,142 @@ def test_frameless_applies_dwm_border_color(monkeypatch, frame, expected_color):
         ))
         return 0
 
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: windows_10)
     monkeypatch.setattr(frameless._dwmapi, "DwmSetWindowAttribute", set_attribute)
     window._apply_dwm_border_color()
     window._apply_dwm_border_color()
     assert calls == [(123, frameless._DWMWA_BORDER_COLOR, expected_color, 4)]
 
 
+@pytest.mark.parametrize(
+    "message, expected",
+    [(frameless._WM_NCPAINT, 0), (frameless._WM_NCACTIVATE, 1)],
+)
+def test_frameless_windows_10_rect_corner_suppresses_native_frame(
+        monkeypatch, message, expected):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._frame = "rect_corner"
+    window._applied_dwm_border_color = None
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: True)
+    monkeypatch.setattr(window, "_set_dwm_border_color", lambda _color: None)
+    monkeypatch.setattr(
+        frameless._user32,
+        "DefWindowProcW",
+        lambda *_args: pytest.fail("must not paint the native frame"),
+    )
+    assert window._wndproc(123, message, 1, 0) == expected
+
+
+@pytest.mark.parametrize("frame", ["normal", "rect", "rect_shadow"])
+@pytest.mark.parametrize(
+    "message, lparam",
+    [(frameless._WM_NCPAINT, 0), (frameless._WM_NCACTIVATE, -1)],
+)
+def test_frameless_win10_defers_nonclient_messages(
+        monkeypatch, frame, message, lparam):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._frame = frame
+    window._applied_dwm_border_color = None
+    window._nc_active = False
+    calls = []
+    border_calls = []
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: True)
+    monkeypatch.setattr(window, "_set_dwm_border_color", lambda _color: None)
+    monkeypatch.setattr(
+        window,
+        "_update_win10_normal_border",
+        lambda: border_calls.append("update"),
+    )
+    monkeypatch.setattr(
+        frameless._user32,
+        "DefWindowProcW",
+        lambda *args: calls.append(args) or 77,
+    )
+
+    assert window._wndproc(123, message, 1, 0) == 77
+    assert calls == [(123, message, 1, lparam)]
+    assert border_calls == (
+        ["update"]
+        if frame == "normal" and message == frameless._WM_NCACTIVATE
+        else []
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [frameless._WM_NCUAHDRAWCAPTION, frameless._WM_NCUAHDRAWFRAME],
+)
+def test_frameless_win10_normal_suppresses_native_draw_messages(
+        monkeypatch, message):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._frame = "normal"
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: True)
+    monkeypatch.setattr(
+        frameless._user32,
+        "DefWindowProcW",
+        lambda *_args: pytest.fail("must not draw the native titlebar"),
+    )
+
+    assert window._wndproc(123, message, 1, 789) == 0
+
+
+def test_frameless_win10_normal_installs_noninteractive_border():
+    class View:
+        def __init__(self):
+            self.scripts = []
+
+        def js_init(self, script):
+            self.scripts.append(script)
+
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.view = View()
+    window._install_win10_normal_border()
+
+    assert len(window.view.scripts) == 1
+    script = window.view.scripts[0]
+    assert frameless._WIN10_BORDER_ACTIVE in script
+    assert frameless._WIN10_BORDER_INACTIVE in script
+    assert "position:fixed" in script
+    assert "pointer-events:none" in script
+    assert "window.addEventListener('focus'" in script
+    assert "window.addEventListener('blur'" in script
+
+
+def test_frameless_win10_normal_updates_border_state(monkeypatch):
+    class View:
+        def __init__(self):
+            self.calls = []
+
+        def js_eval(self, script):
+            self.calls.append(script)
+
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    window.view = View()
+    window._frame = "normal"
+    window._nc_active = True
+    zoomed = False
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: True)
+    monkeypatch.setattr(
+        frameless._user32, "IsZoomed", lambda _hwnd: zoomed
+    )
+
+    window._update_win10_normal_border()
+    assert "window.__pyminiwebview_normal_border(true,false)" in window.view.calls[0]
+
+    window._nc_active = False
+    zoomed = True
+    window._update_win10_normal_border()
+    assert "window.__pyminiwebview_normal_border(false,true)" in window.view.calls[1]
+
+
 def test_frameless_webview_fills_client_area(monkeypatch):
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
+    window._frame = "normal"
     window.view = object()
     window._widget = 456
-    window._resize_overlay = None
+    window._resize_overlays = {}
     calls = []
 
     def client_rect(_hwnd, pointer):
@@ -427,13 +845,62 @@ def test_frameless_webview_fills_client_area(monkeypatch):
     )]
 
 
+@pytest.mark.parametrize(
+    "windows_10, expected_edges",
+    [(True, ("t", "l", "r", "b")), (False, ("t",))],
+)
+def test_frameless_normal_creates_platform_resize_overlays(
+        monkeypatch, windows_10, expected_edges):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    window._frame = "normal"
+    window._overlay_class_name = "ResizeClass"
+    window._overlay_wndproc_ref = None
+    window._overlay_class_atom = None
+    window._resize_overlays = {}
+    window._hinstance = None
+    monkeypatch.setattr(frameless, "_is_windows_10", lambda: windows_10)
+    monkeypatch.setattr(window, "_register_window_class", lambda *_args: 1)
+    monkeypatch.setattr(
+        frameless._user32,
+        "CreateWindowExW",
+        lambda *_args: 100 + len(window._resize_overlays),
+    )
+
+    window._create_native_resize()
+
+    assert tuple(window._resize_overlays) == expected_edges
+    assert window._overlay_class_atom == 1
+
+
+def test_frameless_win10_square_lays_out_four_resize_overlays(monkeypatch):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    window._resize_overlays = {"t": 11, "l": 22, "r": 33, "b": 44}
+    calls = []
+    monkeypatch.setattr(window, "_ring_padding", lambda: 5)
+    monkeypatch.setattr(frameless._user32, "IsZoomed", lambda _hwnd: False)
+    monkeypatch.setattr(frameless._user32, "ShowWindow", lambda *_args: True)
+    monkeypatch.setattr(
+        frameless._user32, "SetWindowPos", lambda *args: calls.append(args)
+    )
+
+    window._layout_native_resize(100, 80)
+    assert calls == [
+        (11, None, 0, 0, 100, 5, frameless._SWP_NOACTIVATE),
+        (22, None, 0, 5, 5, 70, frameless._SWP_NOACTIVATE),
+        (33, None, 95, 5, 5, 70, frameless._SWP_NOACTIVATE),
+        (44, None, 0, 75, 100, 5, frameless._SWP_NOACTIVATE),
+    ]
+
+
 def test_frameless_native_overlay_forwards_resize_to_host(monkeypatch):
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
     calls = []
     monkeypatch.setattr(
-        frameless._user32, "PostMessageW",
-        lambda *args: calls.append(args) or True,
+        frameless._user32, "SendMessageW",
+        lambda *args: calls.append(args) or 0,
     )
 
     assert window._overlay_wndproc(
@@ -464,6 +931,7 @@ def test_frameless_minimize_preserves_webview_layout(monkeypatch, size, expected
     window._layout_webview = lambda: layouts.append(size)
     window._apply_dwm_border_color = lambda: border_updates.append(size)
     window._extend_dwm_frame = lambda: None
+    window._update_win10_normal_border = lambda: None
     window._notify_maximized_state = lambda: None
     monkeypatch.setattr(frameless._user32, "DefWindowProcW", lambda *args: 0)
 

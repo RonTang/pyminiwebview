@@ -110,7 +110,7 @@ def main():
         min_width=720,
         min_height=520,
         app_name="pyminiwebview-example-05",
-        frame="square_shadow",
+        frame="rect_shadow",
         dark_mode=True,
         bgcolor=BG_COLOR,
     ) as window:

@@ -192,7 +192,7 @@ with FramelessWindow(
     min_height=520,
     resizable=True,
     app_name="my-app",
-    frame="round",
+    frame="normal",
     dark_mode=True,
     bgcolor=0x0026120D,
 ) as window:
@@ -205,7 +205,7 @@ with FramelessWindow(
     window.run()
 ```
 
-内置 JS 函数为 `__window_minimize()`、`__window_toggle_maximize()`、`__window_close()`、`__window_start_move()`、`__window_start_resize(direction)` 和自动首帧回调 `__window_ready()`。左右和底边保留原生 Win32 非客户区缩边，顶部使用不占布局的不可见原生命中区，支持八方向拖动；命中区域宽度由系统和 DPI 决定，无需页面添加手柄；自定义手柄仍可调用 `__window_start_resize(direction)`，方向为 `l`、`r`、`t`、`b`、`tl`、`tr`、`bl`、`br`。页面无需调用 ready，库会在 DOM 就绪后的两个动画帧自动显示窗口。可选 `on_maximize_change` 回调用于更新自定义标题栏图标。
+内置 JS 函数为 `__window_minimize()`、`__window_toggle_maximize()`、`__window_close()`、`__window_start_move()`、`__window_start_resize(direction)` 和自动首帧回调 `__window_ready()`。边缘命中区由窗口模式和系统决定，实际缩放均进入 Windows 原生缩放循环，支持八方向拖动；命中区域宽度由系统和 DPI 决定，无需页面添加手柄。自定义手柄仍可调用 `__window_start_resize(direction)`，方向为 `l`、`r`、`t`、`b`、`tl`、`tr`、`bl`、`br`。页面无需调用 ready，库会在 DOM 就绪后的两个动画帧自动显示窗口。可选 `on_maximize_change` 回调用于更新自定义标题栏图标。
 
 `resizable=True` 默认允许边缘拖动缩放和最大化。固定大小窗口显式传入 `resizable=False`：
 
@@ -217,20 +217,22 @@ with FramelessWindow(width=800, height=600, resizable=False) as window:
 
 固定模式会禁用八方向缩放、`__window_start_resize()`、最大化按钮对应的 `__window_toggle_maximize()` 以及标题栏双击最大化，同时保留标题栏拖动和最小化。自定义标题栏应在此模式下隐藏或禁用最大化按钮。
 
-#### 窗口框两套餐
+#### 窗口框四种模式
 
-`frame` 将圆角、边线和阴影作为同一个 DWM 渲染单元配置，只提供两种受支持的组合：
+`frame` 提供以下圆角、边线和阴影组合：
 
 | 预设 | 圆角 | 边线 | 阴影 |
 |---|---|---|---|
-| `round`（默认） | Windows 11 圆角 | 系统默认色 | 开启 |
-| `square_shadow` | 方角 | 不绘制 | 开启 |
+| `normal`（默认） | Windows 11 四角圆角；Windows 10 矩形 | 系统默认描边 | 开启 |
+| `rect` | 四角方角 | 不绘制 | 关闭 |
+| `rect_corner` | 标题栏两上角圆角，两下角方角 | 不绘制 | 关闭 |
+| `rect_shadow` | 四角方角 | 不绘制 | 开启 |
 
-`dark_mode` 与预设独立，只设置 `DWMWA_USE_IMMERSIVE_DARK_MODE`，不会修改 HTML 配色。两档始终启用 DWM 非客户区渲染和阴影，不再公开 `shadow`、`dwm_border*` 或 `inner_border_*` 参数，避免拼出圆角无边线或无阴影等非支持组合。
+旧名称 `round` 和 `square_shadow` 分别作为 `normal` 和 `rect_shadow` 的兼容别名保留。`dark_mode` 与预设独立，只设置 `DWMWA_USE_IMMERSIVE_DARK_MODE`，不会修改 HTML 配色。`normal` 和 `rect_shadow` 启用 DWM 非客户区渲染及阴影；`rect` 同样启用非客户区渲染，但使用全客户区和零 glass 扩展以移除阴影，并将非客户区绘制消息交回系统，确保四角方正；`rect_corner` 使用 `DWMNCRP_DISABLED`、全客户区和零 glass 扩展，保留标题栏两上角的圆角效果。所有模式均保留 `WS_OVERLAPPEDWINDOW` 和 `WS_CAPTION`，由 `WM_NCCALCSIZE` 移除标题栏，以保留系统最大化和最小化动画。不再公开独立的 `shadow`、`dwm_border*` 或 `inner_border_*` 参数。
 
-圆角残点来自 35 号 `DWMWA_CAPTION_COLOR` 框体底色在圆角弧区的露出。33 号 `DWMWA_WINDOW_CORNER_PREFERENCE` 控制圆角，34 号 `DWMWA_BORDER_COLOR` 控制边线色，35 号控制框体底色。DWM 颜色属性不读取 alpha；`COLOR_NONE` 在 34 号表示不画线，在 35 号则显示白色。caption 色由整个窗口共享，四角会联动，不能按角单独控制。因此 `round` 用系统边线封住弧区，`square_shadow` 用方角根除弧区；库不提供 `round_borderless`。
+圆角残点来自 35 号 `DWMWA_CAPTION_COLOR` 框体底色在圆角弧区的露出。33 号 `DWMWA_WINDOW_CORNER_PREFERENCE` 控制圆角，34 号 `DWMWA_BORDER_COLOR` 控制边线色，35 号控制框体底色。DWM 颜色属性不读取 alpha；`COLOR_NONE` 在 34 号表示不画线，在 35 号则显示白色。caption 色由整个窗口共享，四角会联动，不能按角单独控制。因此 Windows 11 上的 `normal` 用系统边线封住弧区，`rect` 和 `rect_shadow` 保持四角方正；`rect_corner` 用于只需要标题栏两上角圆角的无边、无阴影窗口。
 
-Windows 10（build 22000 以下）不支持 33/34/35 号属性，相关 `DwmSetWindowAttribute` 错误会安全跳过。`round` 自动降级为方角、阴影和系统边，两档都保持系统原生的方角形态，不会出现圆角弧区残点。
+Windows 10（build 22000 以下）不支持 33/34/35 号属性，相关 `DwmSetWindowAttribute` 错误会安全跳过。`normal` 使用全客户区和 `(0, 0, 1, 0)` glass margins，仅保留顶部 glass 以维持阴影，不让 DWM 绘制 L/R/B 白边。可见四边由 WebView 最上层的固定 1px 非交互元素绘制：活动状态使用灰黑色 `#333333`，非活动状态使用灰色 `#A0A0A0`，最大化时隐藏；该元素不占用布局，也不截获鼠标事件。`WM_NCUAHDRAWCAPTION` 与 `WM_NCUAHDRAWFRAME` 均被拦截，以避免原生标题栏重现。四边通过透明 overlay 恢复原生 resize，实际拖拽通过同步 `WM_NCLBUTTONDOWN` 进入系统原生缩放循环。`rect`、`rect_corner` 和 `rect_shadow` 不保留系统非客户区，WebView 铺满整个窗口，四边使用窗口内部的不可见命中区域，实际拖拽仍进入 Windows 原生缩放循环。`rect_shadow` 使用 `(0, 0, 1, 0)` glass margins，并把 `WM_NCPAINT`、`WM_NCACTIVATE` 交回 `DefWindowProc`，以保留 DWM 阴影和系统动画；`rect` 使用 `DWMNCRP_ENABLED`、零 glass 和系统非客户区消息处理，`rect_corner` 使用 `DWMNCRP_DISABLED`；两者都不扩展 glass，以移除边线和阴影。
 
 #### DPI 感知
 
