@@ -1,4 +1,5 @@
 import ctypes
+import math
 import sys
 import threading
 import warnings
@@ -121,13 +122,17 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
     user32.IsWindowVisible.restype = wintypes.BOOL
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+    user32.GetPropW.restype = wintypes.HANDLE
     watchdog = threading.Timer(10, window.view.terminate)
     try:
         assert user32.IsWindow(hwnd)
         assert not user32.IsWindowVisible(hwnd)
+        assert user32.GetPropW(hwnd, frameless._NON_RUDE_PROPERTY) == 1
         assert {
             "__window_minimize",
             "__window_toggle_maximize",
+            "__window_set_maximize_rect",
             "__window_close",
             "__window_start_move",
             "__window_start_resize",
@@ -155,6 +160,17 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
         assert params.rgrc[0].top == 0
         assert params.rgrc[0].right == 760 - padding
         assert params.rgrc[0].bottom == 540 - padding
+
+        suggested = wintypes.RECT(120, 120, 880, 660)
+        assert window._wndproc(
+            hwnd, frameless._WM_DPICHANGED, (192 << 16) | 96,
+            ctypes.addressof(suggested),
+        ) == 0
+        actual = wintypes.RECT()
+        assert user32.GetWindowRect(hwnd, ctypes.byref(actual))
+        assert (actual.left, actual.top, actual.right, actual.bottom) == (
+            120, 120, 880, 660
+        )
 
         window.on_maximize_change = None
         assert window.toggle_maximize() is True
@@ -237,6 +253,115 @@ def test_frameless_maximize_uses_monitor_relative_position(monkeypatch):
     ) == 0
     assert (info.ptMaxPosition.x, info.ptMaxPosition.y) == (60, 0)
     assert (info.ptMaxSize.x, info.ptMaxSize.y) == (1860, 1040)
+
+
+def test_frameless_dpi_change_uses_suggested_window_rect(monkeypatch):
+    window = FramelessWindow.__new__(FramelessWindow)
+    suggested = wintypes.RECT(1920, 120, 3120, 960)
+    calls = []
+    monkeypatch.setattr(
+        frameless._user32, "SetWindowPos",
+        lambda *args: calls.append(args) or True,
+    )
+
+    assert window._wndproc(
+        123, frameless._WM_DPICHANGED, (192 << 16) | 96,
+        ctypes.addressof(suggested),
+    ) == 0
+    assert calls == [(
+        123, None, 1920, 120, 1200, 840,
+        frameless._SWP_NOZORDER | frameless._SWP_NOACTIVATE,
+    )]
+
+
+def test_frameless_maximize_rect_uses_physical_client_coordinates(monkeypatch):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    window._resizable = True
+    window._maximize_button_rect = None
+    assert window.set_maximize_button_rect(40.2, 20.2, 90.2, 60.2) is True
+    assert window._maximize_button_rect == (40, 20, 90, 60)
+
+    monkeypatch.setattr(
+        frameless._dwmapi, "DwmDefWindowProc", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        window, "_native_hit_test", lambda _lparam: frameless._HTCLIENT
+    )
+
+    def screen_to_client(_hwnd, pointer):
+        point = ctypes.cast(pointer, ctypes.POINTER(frameless._POINT)).contents
+        point.x -= 100
+        point.y -= 50
+        return True
+
+    monkeypatch.setattr(frameless._user32, "ScreenToClient", screen_to_client)
+    inside = (80 << 16) | 150
+    outside = (200 << 16) | 200
+    assert window._wndproc(
+        123, frameless._WM_NCHITTEST, 0, inside
+    ) == frameless._HTMAXBUTTON
+    assert window._wndproc(
+        123, frameless._WM_NCHITTEST, 0, outside
+    ) == frameless._HTCLIENT
+
+    assert window.set_maximize_button_rect(0, 0, 0, 0) is True
+    assert window._maximize_button_rect is None
+    with pytest.raises(ValueError, match="finite"):
+        window.set_maximize_button_rect(0, 0, math.inf, 1)
+
+
+def test_frameless_composition_nonclient_click_preserves_html_input(monkeypatch):
+    calls = []
+    captures = []
+    focus_calls = []
+    captured = None
+
+    class View:
+        def composition_mouse_input(self, message, wparam, lparam):
+            calls.append((message, wparam, lparam))
+            return True
+
+        def set_focus(self):
+            focus_calls.append(True)
+
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    window.view = View()
+
+    def get_capture():
+        return captured
+
+    def set_capture(hwnd):
+        nonlocal captured
+        captured = hwnd
+        captures.append(("set", hwnd))
+        return hwnd
+
+    def release_capture():
+        nonlocal captured
+        captured = None
+        captures.append(("release",))
+        return True
+
+    monkeypatch.setattr(frameless._user32, "GetCapture", get_capture)
+    monkeypatch.setattr(frameless._user32, "SetCapture", set_capture)
+    monkeypatch.setattr(frameless._user32, "ReleaseCapture", release_capture)
+
+    assert window._forward_composition_mouse(
+        frameless._WM_NCLBUTTONDOWN, frameless._HTMAXBUTTON, 789
+    ) is True
+    assert captured == 123
+    assert window._forward_composition_mouse(
+        frameless._WM_NCLBUTTONUP, frameless._HTMAXBUTTON, 789
+    ) is True
+    assert captured is None
+    assert calls == [
+        (frameless._WM_NCLBUTTONDOWN, frameless._HTMAXBUTTON, 789),
+        (frameless._WM_NCLBUTTONUP, frameless._HTMAXBUTTON, 789),
+    ]
+    assert captures == [("set", 123), ("release",)]
+    assert focus_calls == [True]
 
 
 def test_frameless_maximized_client_area_uses_proposed_monitor(monkeypatch):
@@ -382,6 +507,7 @@ def test_frameless_rect_uses_full_client_area(monkeypatch, frame, windows_10):
 def test_frameless_win10_normal_uses_overlay_hit_testing(monkeypatch):
     window = FramelessWindow.__new__(FramelessWindow)
     window._frame = "normal"
+    window._maximize_button_rect = None
     calls = []
     monkeypatch.setattr(frameless, "_is_windows_10", lambda: True)
     monkeypatch.setattr(
@@ -411,6 +537,7 @@ def test_frameless_win10_normal_uses_overlay_hit_testing(monkeypatch):
 def test_frameless_rect_uses_custom_hit_testing(monkeypatch, frame, windows_10):
     window = FramelessWindow.__new__(FramelessWindow)
     window._frame = frame
+    window._maximize_button_rect = None
     calls = []
     monkeypatch.setattr(frameless, "_is_windows_10", lambda: windows_10)
     monkeypatch.setattr(
@@ -821,7 +948,7 @@ def test_frameless_webview_fills_client_area(monkeypatch):
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
     window._frame = "normal"
-    window.view = object()
+    window.view = SimpleNamespace(composition_resize=lambda: None)
     window._widget = 456
     window._resize_overlays = {}
     calls = []
@@ -911,6 +1038,19 @@ def test_frameless_native_overlay_forwards_resize_to_host(monkeypatch):
     )]
 
 
+def test_frameless_destroy_after_run_does_not_terminate_twice():
+    class View:
+        def terminate(self):
+            raise AssertionError("an exited message loop must not receive WM_QUIT")
+
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    window.view = View()
+    window._running = False
+    assert window._wndproc(123, frameless._WM_DESTROY, 0, 0) == 0
+    assert window.hwnd is None
+
+
 def test_frameless_destroy_ignores_already_closed_view():
     class ClosedView:
         def terminate(self):
@@ -919,6 +1059,7 @@ def test_frameless_destroy_ignores_already_closed_view():
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
     window.view = ClosedView()
+    window._running = True
     assert window._wndproc(123, frameless._WM_DESTROY, 0, 0) == 0
     assert window.hwnd is None
 
@@ -926,6 +1067,7 @@ def test_frameless_destroy_ignores_already_closed_view():
 @pytest.mark.parametrize("size, expected_layouts", [(0, 1), (1, 0), (2, 1)])
 def test_frameless_minimize_preserves_webview_layout(monkeypatch, size, expected_layouts):
     window = FramelessWindow.__new__(FramelessWindow)
+    window.view = None
     layouts = []
     border_updates = []
     window._layout_webview = lambda: layouts.append(size)

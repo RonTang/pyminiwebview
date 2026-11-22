@@ -1,4 +1,5 @@
 import ctypes
+import math
 import sys
 import time
 import warnings
@@ -12,18 +13,44 @@ _WM_MOVE = 0x0003
 _WM_SIZE = 0x0005
 _WM_CLOSE = 0x0010
 _WM_ERASEBKGND = 0x0014
+_WM_SETCURSOR = 0x0020
 _WM_GETMINMAXINFO = 0x0024
 _WM_NCDESTROY = 0x0082
 _WM_NCCALCSIZE = 0x0083
 _WM_NCHITTEST = 0x0084
 _WM_NCPAINT = 0x0085
 _WM_NCACTIVATE = 0x0086
+_WM_NCMOUSEMOVE = 0x00A0
+_WM_NCLBUTTONDOWN = 0x00A1
+_WM_NCLBUTTONUP = 0x00A2
+_WM_NCLBUTTONDBLCLK = 0x00A3
+_WM_NCMOUSELEAVE = 0x02A2
 _WM_NCUAHDRAWCAPTION = 0x00AE
 _WM_NCUAHDRAWFRAME = 0x00AF
-_WM_NCLBUTTONDOWN = 0x00A1
 _WM_MOUSEMOVE = 0x0200
+_WM_LBUTTONDOWN = 0x0201
 _WM_LBUTTONUP = 0x0202
+_WM_LBUTTONDBLCLK = 0x0203
+_WM_RBUTTONDOWN = 0x0204
+_WM_RBUTTONUP = 0x0205
+_WM_RBUTTONDBLCLK = 0x0206
+_WM_MBUTTONDOWN = 0x0207
+_WM_MBUTTONUP = 0x0208
+_WM_MBUTTONDBLCLK = 0x0209
+_WM_MOUSEWHEEL = 0x020A
+_WM_XBUTTONDOWN = 0x020B
+_WM_XBUTTONUP = 0x020C
+_WM_XBUTTONDBLCLK = 0x020D
+_WM_MOUSEHWHEEL = 0x020E
 _WM_CAPTURECHANGED = 0x0215
+_WM_POINTERUPDATE = 0x0245
+_WM_POINTERDOWN = 0x0246
+_WM_POINTERUP = 0x0247
+_WM_POINTERENTER = 0x0249
+_WM_POINTERLEAVE = 0x024A
+_WM_POINTERACTIVATE = 0x024B
+_WM_DPICHANGED = 0x02E0
+_WM_MOUSELEAVE = 0x02A3
 _SIZE_MINIMIZED = 1
 _SW_HIDE = 0
 _SW_MAXIMIZE = 3
@@ -36,6 +63,8 @@ _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
 _SWP_FRAMECHANGED = 0x0020
 _MONITOR_DEFAULTTONEAREST = 2
+_TME_LEAVE = 0x00000002
+_TME_NONCLIENT = 0x00000010
 _SM_CXFRAME = 32
 _SM_CXDOUBLECLK = 36
 _SM_CYDOUBLECLK = 37
@@ -53,8 +82,10 @@ _DWMWCP_DONOTROUND = 1
 _DWMWCP_ROUND = 2
 _WIN10_BORDER_ACTIVE = "#333333"
 _WIN10_BORDER_INACTIVE = "#A0A0A0"
+_HTNOWHERE = 0
 _HTCLIENT = 1
 _HTCAPTION = 2
+_HTMAXBUTTON = 9
 _HTLEFT, _HTRIGHT, _HTTOP, _HTBOTTOM = 10, 11, 12, 15
 _HTTOPLEFT, _HTTOPRIGHT = 13, 14
 _HTBOTTOMLEFT, _HTBOTTOMRIGHT = 16, 17
@@ -69,6 +100,26 @@ _HT_CODES = {
     "br": _HTBOTTOMRIGHT,
 }
 _HT_RESIZE_CODES = frozenset(_HT_CODES.values())
+_COMPOSITION_MOUSE_MESSAGES = frozenset({
+    _WM_MOUSEMOVE, _WM_LBUTTONDOWN, _WM_LBUTTONUP, _WM_LBUTTONDBLCLK,
+    _WM_RBUTTONDOWN, _WM_RBUTTONUP, _WM_RBUTTONDBLCLK,
+    _WM_MBUTTONDOWN, _WM_MBUTTONUP, _WM_MBUTTONDBLCLK,
+    _WM_MOUSEWHEEL, _WM_XBUTTONDOWN, _WM_XBUTTONUP, _WM_XBUTTONDBLCLK,
+    _WM_MOUSEHWHEEL, _WM_MOUSELEAVE,
+})
+_COMPOSITION_POINTER_MESSAGES = frozenset({
+    _WM_POINTERUPDATE, _WM_POINTERDOWN, _WM_POINTERUP, _WM_POINTERENTER,
+    _WM_POINTERLEAVE, _WM_POINTERACTIVATE,
+})
+_MOUSE_DOWN_MESSAGES = frozenset({
+    _WM_LBUTTONDOWN, _WM_LBUTTONDBLCLK,
+    _WM_RBUTTONDOWN, _WM_RBUTTONDBLCLK,
+    _WM_MBUTTONDOWN, _WM_MBUTTONDBLCLK,
+    _WM_XBUTTONDOWN, _WM_XBUTTONDBLCLK,
+})
+_MOUSE_UP_MESSAGES = frozenset({
+    _WM_LBUTTONUP, _WM_RBUTTONUP, _WM_MBUTTONUP, _WM_XBUTTONUP,
+})
 _WS_CHILD = 0x40000000
 _WS_VISIBLE = 0x10000000
 _WS_CLIPSIBLINGS = 0x04000000
@@ -77,6 +128,7 @@ _WS_OVERLAPPEDWINDOW = 0x00CF0000
 _WS_THICKFRAME = 0x00040000
 _WS_MAXIMIZEBOX = 0x00010000
 _ERROR_ACCESS_DENIED = 5
+_NON_RUDE_PROPERTY = "NonRudeHWND"
 _LONG_PTR = ctypes.c_ssize_t
 _WNDPROC = ctypes.WINFUNCTYPE(
     _LONG_PTR, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
@@ -116,6 +168,15 @@ class _MINMAXINFO(ctypes.Structure):
         ("ptMaxPosition", _POINT),
         ("ptMinTrackSize", _POINT),
         ("ptMaxTrackSize", _POINT),
+    ]
+
+
+class _TRACKMOUSEEVENT(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("hwndTrack", wintypes.HWND),
+        ("dwHoverTime", wintypes.DWORD),
     ]
 
 
@@ -166,6 +227,12 @@ _user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 _user32.GetWindowRect.restype = wintypes.BOOL
 _user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 _user32.GetClientRect.restype = wintypes.BOOL
+_user32.ScreenToClient.argtypes = [wintypes.HWND, ctypes.POINTER(_POINT)]
+_user32.ScreenToClient.restype = wintypes.BOOL
+_user32.GetCapture.argtypes = []
+_user32.GetCapture.restype = wintypes.HWND
+_user32.TrackMouseEvent.argtypes = [ctypes.POINTER(_TRACKMOUSEEVENT)]
+_user32.TrackMouseEvent.restype = wintypes.BOOL
 _user32.IsZoomed.argtypes = [wintypes.HWND]
 _user32.IsZoomed.restype = wintypes.BOOL
 _user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
@@ -194,6 +261,10 @@ _user32.SendMessageW.argtypes = [
 _user32.SendMessageW.restype = _LONG_PTR
 _user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 _user32.SetForegroundWindow.restype = wintypes.BOOL
+_user32.SetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.HANDLE]
+_user32.SetPropW.restype = wintypes.BOOL
+_user32.RemovePropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+_user32.RemovePropW.restype = wintypes.HANDLE
 _user32.SystemParametersInfoW.argtypes = [
     wintypes.UINT, wintypes.UINT, wintypes.LPVOID, wintypes.UINT,
 ]
@@ -220,6 +291,11 @@ _dwmapi.DwmExtendFrameIntoClientArea.argtypes = [
     wintypes.HWND, ctypes.POINTER(_MARGINS),
 ]
 _dwmapi.DwmExtendFrameIntoClientArea.restype = wintypes.LONG
+_dwmapi.DwmDefWindowProc.argtypes = [
+    wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+    ctypes.POINTER(_LONG_PTR),
+]
+_dwmapi.DwmDefWindowProc.restype = wintypes.BOOL
 try:
     _user32.GetSystemMetricsForDpi.argtypes = [ctypes.c_int, wintypes.UINT]
     _user32.GetSystemMetricsForDpi.restype = ctypes.c_int
@@ -311,6 +387,7 @@ class FramelessWindow:
         self.bridge = None
         self._widget = None
         self.ready = False
+        self._running = False
         self.on_maximize_change = on_maximize_change
         self._title = title
         self._width = width
@@ -342,6 +419,7 @@ class FramelessWindow:
         self._resize_direction = None
         self._resize_origin = None
         self._resize_bounds = None
+        self._maximize_button_rect = None
         try:
             self._create()
         except BaseException:
@@ -592,6 +670,71 @@ class FramelessWindow:
             return _HTBOTTOM
         return _HTCLIENT
 
+    def _dwm_def_window_proc(self, hwnd, message, wparam, lparam):
+        result = _LONG_PTR()
+        handled = _dwmapi.DwmDefWindowProc(
+            hwnd, message, wparam, lparam, ctypes.byref(result)
+        )
+        return bool(handled), result.value
+
+    def _composition_hit_test(self, lparam, native_hit):
+        rect = self._maximize_button_rect
+        if native_hit != _HTCLIENT or not self._resizable or rect is None:
+            return native_hit
+        point = _POINT(
+            ctypes.c_short(lparam & 0xFFFF).value,
+            ctypes.c_short((lparam >> 16) & 0xFFFF).value,
+        )
+        if not _user32.ScreenToClient(self.hwnd, ctypes.byref(point)):
+            return native_hit
+        left, top, right, bottom = rect
+        if left <= point.x < right and top <= point.y < bottom:
+            return _HTMAXBUTTON
+        return native_hit
+
+    def _track_composition_mouse_leave(self, nonclient):
+        event = _TRACKMOUSEEVENT(
+            ctypes.sizeof(_TRACKMOUSEEVENT),
+            _TME_LEAVE | (_TME_NONCLIENT if nonclient else 0),
+            self.hwnd,
+            0,
+        )
+        _user32.TrackMouseEvent(ctypes.byref(event))
+
+    def _forward_composition_mouse(self, message, wparam, lparam):
+        if not self.view:
+            return False
+        if message in (_WM_MOUSEMOVE, _WM_NCMOUSEMOVE):
+            self._track_composition_mouse_leave(message == _WM_NCMOUSEMOVE)
+        handled = self.view.composition_mouse_input(message, wparam, lparam)
+        if not handled:
+            return False
+        if message in _MOUSE_DOWN_MESSAGES or message in (
+            _WM_NCLBUTTONDOWN, _WM_NCLBUTTONDBLCLK
+        ):
+            self.view.set_focus()
+            if _user32.GetCapture() != self.hwnd:
+                _user32.SetCapture(self.hwnd)
+        elif (
+            message in _MOUSE_UP_MESSAGES or message == _WM_NCLBUTTONUP
+        ) and _user32.GetCapture() == self.hwnd:
+            _user32.ReleaseCapture()
+        return True
+
+    def _forward_composition_pointer(self, message, wparam):
+        if not self.view:
+            return False
+        handled = self.view.composition_pointer_input(message, wparam)
+        if not handled:
+            return False
+        if message == _WM_POINTERDOWN:
+            self.view.set_focus()
+            if _user32.GetCapture() != self.hwnd:
+                _user32.SetCapture(self.hwnd)
+        elif message == _WM_POINTERUP and _user32.GetCapture() == self.hwnd:
+            _user32.ReleaseCapture()
+        return True
+
     def _layout_webview(self):
         if not self.hwnd or not self.view or not self._widget:
             return
@@ -604,6 +747,7 @@ class FramelessWindow:
             self._widget, None, 0, 0, width, height,
             _SWP_NOZORDER | _SWP_NOACTIVATE,
         )
+        self.view.composition_resize()
         self._layout_native_resize(width, height)
 
     def _create(self):
@@ -634,6 +778,7 @@ class FramelessWindow:
         )
         if not self.hwnd:
             raise ctypes.WinError(ctypes.get_last_error())
+        _user32.SetPropW(self.hwnd, _NON_RUDE_PROPERTY, ctypes.c_void_p(1))
 
         self._apply_corner_preference()
         self._apply_dark_mode()
@@ -650,6 +795,7 @@ class FramelessWindow:
             app_name=self._app_name,
             user_data_folder=self._user_data_folder,
             clipboard_permission=self._clipboard_permission,
+            composition_hosting=True,
         )
         self._widget = self.view.get_native_handle(
             pyminiwebview.NATIVE_HANDLE_KIND_UI_WIDGET
@@ -667,6 +813,7 @@ class FramelessWindow:
         controls = {
             "__window_minimize": self.minimize,
             "__window_toggle_maximize": self.toggle_maximize,
+            "__window_set_maximize_rect": self.set_maximize_button_rect,
             "__window_close": self.close_window,
             "__window_start_move": self.start_move,
             "__window_start_resize": self.start_resize,
@@ -716,6 +863,17 @@ class FramelessWindow:
         maximized = bool(_user32.IsZoomed(self.hwnd))
         self._notify_maximized_state()
         return maximized
+
+    def set_maximize_button_rect(self, left, top, right, bottom):
+        values = tuple(float(value) for value in (left, top, right, bottom))
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("maximize button rectangle must be finite")
+        left, top, right, bottom = (round(value) for value in values)
+        self._maximize_button_rect = (
+            (left, top, right, bottom)
+            if right > left and bottom > top else None
+        )
+        return True
 
     def close_window(self):
         if not self.hwnd:
@@ -813,6 +971,15 @@ class FramelessWindow:
             return None
         return info
 
+    def _handle_dpi_changed(self, hwnd, lparam):
+        suggested = ctypes.cast(lparam, ctypes.POINTER(wintypes.RECT)).contents
+        _user32.SetWindowPos(
+            hwnd, None, suggested.left, suggested.top,
+            suggested.right - suggested.left, suggested.bottom - suggested.top,
+            _SWP_NOZORDER | _SWP_NOACTIVATE,
+        )
+        return 0
+
     def _handle_nc_calc_size(self, hwnd, wparam, lparam):
         use_dwm_frame = self._use_dwm_frame()
         if not use_dwm_frame and not _user32.IsZoomed(hwnd):
@@ -880,14 +1047,50 @@ class FramelessWindow:
             return 0
         if message == _WM_GETMINMAXINFO:
             return self._handle_get_min_max_info(hwnd, lparam)
+        if message == _WM_DPICHANGED:
+            return self._handle_dpi_changed(hwnd, lparam)
+        if message == _WM_SETCURSOR and self.view:
+            if (lparam & 0xFFFF) == _HTCLIENT and self.view.composition_cursor():
+                return 1
+        if message == _WM_NCMOUSELEAVE and self.view:
+            self.view.composition_mouse_input(_WM_MOUSELEAVE, 0, 0)
+        if message == _WM_NCMOUSEMOVE and wparam == _HTMAXBUTTON:
+            self._forward_composition_mouse(message, wparam, lparam)
+            handled, result = self._dwm_def_window_proc(
+                hwnd, message, wparam, lparam
+            )
+            if handled:
+                return result
+        elif (
+            message in (_WM_NCLBUTTONDOWN, _WM_NCLBUTTONUP, _WM_NCLBUTTONDBLCLK)
+            and wparam == _HTMAXBUTTON
+            and self._forward_composition_mouse(message, wparam, lparam)
+        ):
+            return 0
         if message == _WM_NCHITTEST:
-            return self._native_hit_test(lparam)
+            handled, result = self._dwm_def_window_proc(
+                hwnd, message, wparam, lparam
+            )
+            if handled and result not in (_HTCLIENT, _HTNOWHERE):
+                return result
+            native_hit = self._native_hit_test(lparam)
+            return self._composition_hit_test(lparam, native_hit)
         if message == _WM_MOUSEMOVE and self._resize_direction:
             self._resize()
             return 0
         if message == _WM_LBUTTONUP and self._resize_direction:
             self._finish_resize()
             _user32.ReleaseCapture()
+            return 0
+        if (
+            message in _COMPOSITION_POINTER_MESSAGES
+            and self._forward_composition_pointer(message, wparam)
+        ):
+            return 0
+        if (
+            message in _COMPOSITION_MOUSE_MESSAGES
+            and self._forward_composition_mouse(message, wparam, lparam)
+        ):
             return 0
         if message == _WM_CAPTURECHANGED:
             self._finish_resize()
@@ -896,6 +1099,8 @@ class FramelessWindow:
             if self.view:
                 self.view.notify_parent_position()
         elif message == _WM_SIZE:
+            if self.view:
+                self.view.composition_visible(wparam != _SIZE_MINIMIZED)
             if wparam != _SIZE_MINIMIZED:
                 self._layout_webview()
                 self._apply_dwm_border_color()
@@ -906,8 +1111,9 @@ class FramelessWindow:
             _user32.DestroyWindow(hwnd)
             return 0
         elif message == _WM_DESTROY:
+            _user32.RemovePropW(hwnd, _NON_RUDE_PROPERTY)
             self.hwnd = None
-            if self.view:
+            if self.view and self._running:
                 try:
                     self.view.terminate()
                 except RuntimeError:
@@ -918,7 +1124,11 @@ class FramelessWindow:
     def run(self):
         if not self.view:
             raise RuntimeError("FramelessWindow is closed")
-        self.view.run()
+        self._running = True
+        try:
+            self.view.run()
+        finally:
+            self._running = False
 
     def close(self):
         if self._resize_direction:

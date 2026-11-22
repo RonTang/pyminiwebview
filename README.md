@@ -23,10 +23,10 @@
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
 
-**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.7`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
+**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.8`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
 
 ```bash
-python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.7
+python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.8
 ```
 
 TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可以从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后还可从 Releases 页面获取。未来发布到正式 PyPI 后可使用：
@@ -38,7 +38,7 @@ python -m pip install pyminiwebview
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.7-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.8-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将文件命名为 `pyminiwebview.pyd`，放到应用脚本同目录或 `sys.path` 包含的其他目录，然后执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 wheel 可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
@@ -152,6 +152,7 @@ WebView(
     user_data_folder=None,
     app_name="pyminiwebview",
     clipboard_permission="default",
+    composition_hosting=False,
 )
 ```
 
@@ -161,6 +162,7 @@ WebView(
 - `bgcolor`：Win32 `COLORREF`，字节顺序为 BGR。
 - `user_data_folder`：显式指定 WebView2 用户数据目录。默认使用 `%LOCALAPPDATA%\<app_name>`，不再根据 `python.exe` 推导。
 - `clipboard_permission`：`"default"`（默认，由 WebView2 询问用户）、`"allow"` 或 `"deny"`，控制剪贴板读取权限请求。
+- `composition_hosting`：仅嵌入模式，使用 `ICoreWebView2CompositionController` 和 DirectComposition，由宿主负责命中测试及输入转发；`FramelessWindow` 自动启用并完整管理，普通嵌入场景保持默认 `False`。
 
 方法：`close()`、`configure_app_mode(...)`、`notify_parent_position()`、`js_bind(name, fn)`、`js_eval(js)`、`js_init(js)`、`js_return(id, status, result)`、`js_unbind(name)`、`navigate(url)`、`set_html(html)`、`set_title(title)`、`set_size(width, height, hints=0)`、`set_focus()`、`get_native_handle(kind)`、`run(hwnd=0, haccel=0)`、`terminate()`、`dispatch(fn)`。
 
@@ -205,7 +207,7 @@ with FramelessWindow(
     window.run()
 ```
 
-内置 JS 函数为 `__window_minimize()`、`__window_toggle_maximize()`、`__window_close()`、`__window_start_move()`、`__window_start_resize(direction)` 和自动首帧回调 `__window_ready()`。边缘命中区由窗口模式和系统决定，实际缩放均进入 Windows 原生缩放循环，支持八方向拖动；命中区域宽度由系统和 DPI 决定，无需页面添加手柄。自定义手柄仍可调用 `__window_start_resize(direction)`，方向为 `l`、`r`、`t`、`b`、`tl`、`tr`、`bl`、`br`。页面无需调用 ready，库会在 DOM 就绪后的两个动画帧自动显示窗口。可选 `on_maximize_change` 回调用于更新自定义标题栏图标。
+内置 JS 函数为 `__window_minimize()`、`__window_toggle_maximize()`、`__window_close()`、`__window_start_move()`、`__window_start_resize(direction)` 和自动首帧回调 `__window_ready()`。自定义最大化按钮通过 `__window_set_maximize_rect(left, top, right, bottom)` 报告物理客户区像素矩形，宿主在原生命中测试中返回 `HTMAXBUTTON`，Windows 11 因而显示原生 Snap Layouts；按钮仍由 HTML 渲染并接收点击，05 示例用 `ResizeObserver`、`resize` 和 `devicePixelRatio` 同步矩形，不需要 `app-region`。边缘命中区由窗口模式和系统决定，实际缩放均进入 Windows 原生缩放循环，支持八方向拖动；命中区域宽度由系统和 DPI 决定，无需页面添加手柄。自定义手柄仍可调用 `__window_start_resize(direction)`，方向为 `l`、`r`、`t`、`b`、`tl`、`tr`、`bl`、`br`。页面无需调用 ready，库会在 DOM 就绪后的两个动画帧自动显示窗口。可选 `on_maximize_change` 回调用于更新自定义标题栏图标。
 
 `resizable=True` 默认允许边缘拖动缩放和最大化。固定大小窗口显式传入 `resizable=False`：
 
@@ -236,7 +238,7 @@ Windows 10（build 22000 以下）不支持 33/34/35 号属性，相关 `DwmSetW
 
 #### DPI 感知
 
-`FramelessWindow` 创建时请求 Per-Monitor V2。若进程 DPI 上下文已被 AppCompat shim 或系统“修复应用缩放”锁定，库会先回退到系统级 DPI 感知；回退仍失败时发出 `RuntimeWarning`，提示 Per-Monitor V2 未生效及可能出现 1px 几何误差。
+`FramelessWindow` 创建时请求 Per-Monitor V2，并在 `WM_DPICHANGED` 中按系统建议矩形调用 `SetWindowPos`，保持跨显示器移动时的逻辑尺寸。最大化区域继续使用目标显示器的 `rcWork`，同时通过 `NonRudeHWND` 避免自动隐藏任务栏把无边框最大化误判为全屏。若进程 DPI 上下文已被 AppCompat shim 或系统“修复应用缩放”锁定，库会先回退到系统级 DPI 感知；回退仍失败时发出 `RuntimeWarning`，提示 Per-Monitor V2 未生效及可能出现 1px 几何误差。
 
 直接运行 `python.exe` 时默认可能是不感知（awareness=0，这是进程默认值而非库错误）。开发预览如需与打包产物一致，应在入口文件最顶部、导入 `pyminiwebview` 之前设置：
 
@@ -382,6 +384,13 @@ GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.
 Win32 助手另需人工确认：打开对话框能选择已有文件、取消返回 `None`；保存对话框允许新文件并提示覆盖；托盘左右键触发回调，`remove()` 后无图标残留。
 
 ## CHANGELOG
+
+### 0.1.8
+
+- `frame` 新增 `normal`、`rect`、`rect_corner`、`rect_shadow` 四种窗口框模式，保留旧名称兼容别名；修复 Windows 10 `normal` 的边线、阴影和原生缩放行为。
+- `FramelessWindow` 按 `WM_DPICHANGED` 建议矩形处理跨 DPI 移动，并通过 `NonRudeHWND` 兼容任务栏自动隐藏场景。
+- 在项目自有 C++ 层新增 Composition WebView 引擎，不扩大 vendor 补丁；自定义 HTML 最大化按钮通过真实 `HTMAXBUTTON` 获得 Windows 11 原生 Snap Layouts，保留 HTML 点击及鼠标、触摸和手写笔输入。
+- 修复消息循环退出后重复发送 `WM_QUIT`，避免影响后续 WebView 初始化；普通 WebView 继续使用原有 HWND 宿主模式。
 
 ### 0.1.7
 

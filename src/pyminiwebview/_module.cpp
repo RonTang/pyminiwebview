@@ -20,6 +20,8 @@
 #include <new>
 #include <string>
 
+#include "_composition.h"
+
 constexpr UINT_PTR STARTUP_REVEAL_TIMER_ID = 0x504D5677;
 
 static void reveal_native_window(HWND window) {
@@ -259,6 +261,7 @@ private:
 struct AutoSizeState {
   HWND parent;
   HWND widget;
+  CompositionWebViewEngine *composition;
 };
 
 struct DispatchCall;
@@ -266,6 +269,7 @@ struct DispatchCall;
 typedef struct {
   PyObject_HEAD
   webview_t webview;
+  CompositionWebViewEngine *composition;
   PyObject *bindings;
   HWND parent;
   HWND widget;
@@ -351,6 +355,9 @@ static int resize_embedded(WebViewObject *self, int width, int height) {
     PyErr_SetFromWindowsErr(0);
     return -1;
   }
+  if (self->composition != nullptr) {
+    self->composition->resize();
+  }
   return 0;
 }
 
@@ -370,6 +377,9 @@ static LRESULT CALLBACK auto_size_proc(HWND hwnd, UINT message, WPARAM wparam,
   if (message == WM_SIZE && wparam != SIZE_MINIMIZED && state->widget != nullptr) {
     SetWindowPos(state->widget, nullptr, 0, 0, LOWORD(lparam), HIWORD(lparam),
                  SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER);
+    if (state->composition != nullptr) {
+      state->composition->resize();
+    }
   } else if (message == WM_NCDESTROY) {
     state->widget = nullptr;
     state->parent = nullptr;
@@ -455,6 +465,7 @@ static void detach_native(WebViewObject *self, NativeFinalizer *finalizer) {
   finalizer->auto_size_state = self->auto_size_state;
   finalizer->subclass_id = reinterpret_cast<UINT_PTR>(self);
   self->webview = nullptr;
+  self->composition = nullptr;
   self->bindings = nullptr;
   self->parent = nullptr;
   self->widget = nullptr;
@@ -871,18 +882,19 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
   const char *user_data_folder = nullptr;
   const char *app_name = "pyminiwebview";
   const char *clipboard_permission = "default";
+  int composition_hosting = 0;
   static char *keywords[] = {
       (char *)"debug",       (char *)"window",       (char *)"autosize",
       (char *)"width",       (char *)"height",       (char *)"url",
       (char *)"title",       (char *)"icon",         (char *)"bgcolor",
       (char *)"user_data_folder", (char *)"app_name",
-      (char *)"clipboard_permission", nullptr};
+      (char *)"clipboard_permission", (char *)"composition_hosting", nullptr};
 
-  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|pKpiizzzIzzs:WebView", keywords,
+  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|pKpiizzzIzzsp:WebView", keywords,
                                    &debug, &window, &autosize, &width, &height,
                                    &url, &title, &icon, &bgcolor,
                                    &user_data_folder, &app_name,
-                                   &clipboard_permission)) {
+                                   &clipboard_permission, &composition_hosting)) {
     return -1;
   }
   self->ui_thread = GetCurrentThreadId();
@@ -900,6 +912,11 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
     PyErr_SetString(PyExc_ValueError, "window must be a valid HWND or zero");
     return -1;
   }
+  if (composition_hosting && parent == nullptr) {
+    PyErr_SetString(PyExc_ValueError,
+                    "composition_hosting requires an embedded parent HWND");
+    return -1;
+  }
 
   int permission = COREWEBVIEW2_PERMISSION_STATE_DEFAULT;
   if (strcmp(clipboard_permission, "allow") == 0) {
@@ -914,8 +931,14 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
 
   try {
     StandaloneShowSuppressor suppress_initial_show(parent == nullptr);
-    self->webview = webview_create_ex(debug, parent, user_data_folder, app_name,
-                                      permission);
+    if (composition_hosting) {
+      self->composition = new CompositionWebViewEngine(
+          debug, parent, user_data_folder, app_name, permission);
+      self->webview = self->composition;
+    } else {
+      self->webview = webview_create_ex(debug, parent, user_data_folder, app_name,
+                                        permission);
+    }
   } catch (const std::bad_alloc &) {
     PyErr_NoMemory();
     return -1;
@@ -945,7 +968,8 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
   if (self->embedded) {
     if (autosize) {
       self->auto_size_state =
-          new (std::nothrow) AutoSizeState{self->parent, self->widget};
+          new (std::nothrow) AutoSizeState{
+              self->parent, self->widget, self->composition};
       if (self->auto_size_state == nullptr) {
         PyErr_NoMemory();
         goto error;
@@ -1071,6 +1095,84 @@ static PyObject *WebView_configure_app_mode(WebViewObject *self, PyObject *args,
     return nullptr;
   }
   Py_RETURN_NONE;
+}
+
+static PyObject *WebView_composition_resize(WebViewObject *self,
+                                            PyObject *ignored) {
+  (void)ignored;
+  if (require_webview(self) < 0) {
+    return nullptr;
+  }
+  if (self->composition == nullptr) {
+    Py_RETURN_FALSE;
+  }
+  self->composition->resize();
+  Py_RETURN_TRUE;
+}
+
+static PyObject *WebView_composition_mouse_input(WebViewObject *self,
+                                                 PyObject *args) {
+  unsigned int message;
+  unsigned long long wparam;
+  unsigned long long lparam;
+  if (!PyArg_ParseTuple(args, "IKK:composition_mouse_input", &message, &wparam,
+                        &lparam)) {
+    return nullptr;
+  }
+  if (require_webview(self) < 0) {
+    return nullptr;
+  }
+  if (self->composition == nullptr) {
+    Py_RETURN_FALSE;
+  }
+  return PyBool_FromLong(self->composition->send_mouse_input(
+      message, static_cast<WPARAM>(wparam), static_cast<LPARAM>(lparam)));
+}
+
+static PyObject *WebView_composition_pointer_input(WebViewObject *self,
+                                                   PyObject *args) {
+  unsigned int message;
+  unsigned long long wparam;
+  if (!PyArg_ParseTuple(args, "IK:composition_pointer_input", &message,
+                        &wparam)) {
+    return nullptr;
+  }
+  if (require_webview(self) < 0) {
+    return nullptr;
+  }
+  if (self->composition == nullptr) {
+    Py_RETURN_FALSE;
+  }
+  return PyBool_FromLong(self->composition->send_pointer_input(
+      message, static_cast<WPARAM>(wparam)));
+}
+
+static PyObject *WebView_composition_cursor(WebViewObject *self,
+                                            PyObject *ignored) {
+  (void)ignored;
+  if (require_webview(self) < 0) {
+    return nullptr;
+  }
+  if (self->composition == nullptr) {
+    Py_RETURN_FALSE;
+  }
+  return PyBool_FromLong(self->composition->update_cursor());
+}
+
+static PyObject *WebView_composition_visible(WebViewObject *self,
+                                             PyObject *args) {
+  int visible;
+  if (!PyArg_ParseTuple(args, "p:composition_visible", &visible)) {
+    return nullptr;
+  }
+  if (require_webview(self) < 0) {
+    return nullptr;
+  }
+  if (self->composition == nullptr) {
+    Py_RETURN_FALSE;
+  }
+  self->composition->set_visible(visible ? TRUE : FALSE);
+  Py_RETURN_TRUE;
 }
 
 static PyObject *WebView_notify_parent_position(WebViewObject *self,
@@ -1477,6 +1579,17 @@ static PyMethodDef WebView_methods[] = {
     {"configure_app_mode", (PyCFunction)WebView_configure_app_mode,
      METH_VARARGS | METH_KEYWORDS,
      "Apply desktop application policies through public WebView2 APIs."},
+    {"composition_resize", (PyCFunction)WebView_composition_resize,
+     METH_NOARGS, "Resize a composition WebView to its parent client area."},
+    {"composition_mouse_input", (PyCFunction)WebView_composition_mouse_input,
+     METH_VARARGS, "Forward Win32 mouse input to a composition WebView."},
+    {"composition_pointer_input",
+     (PyCFunction)WebView_composition_pointer_input, METH_VARARGS,
+     "Forward Win32 pointer input to a composition WebView."},
+    {"composition_cursor", (PyCFunction)WebView_composition_cursor, METH_NOARGS,
+     "Apply the current composition WebView cursor."},
+    {"composition_visible", (PyCFunction)WebView_composition_visible,
+     METH_VARARGS, "Set composition WebView visibility."},
     {"notify_parent_position", (PyCFunction)WebView_notify_parent_position,
      METH_NOARGS, "Notify WebView2 that the host window position changed."},
     {"run", (PyCFunction)WebView_run, METH_VARARGS,
@@ -1566,7 +1679,7 @@ PyMODINIT_FUNC PyInit_pyminiwebview(void) {
                    WEBVIEW_NATIVE_HANDLE_KIND_UI_WIDGET) < 0 ||
       add_constant(module, "NATIVE_HANDLE_KIND_BROWSER_CONTROLLER",
                    WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER) < 0 ||
-      PyModule_AddStringConstant(module, "__version__", "0.1.7") < 0) {
+      PyModule_AddStringConstant(module, "__version__", "0.1.8") < 0) {
     Py_DECREF(module);
     return nullptr;
   }

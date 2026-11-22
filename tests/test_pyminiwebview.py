@@ -310,11 +310,21 @@ def test_notify_parent_position(webview):
     webview.notify_parent_position()
 
 
+def test_standard_webview_does_not_enable_composition_hosting(webview):
+    assert webview.composition_resize() is False
+    assert webview.composition_mouse_input(0x0200, 0, 0) is False
+    assert webview.composition_pointer_input(0x0245, 0) is False
+    assert webview.composition_cursor() is False
+    assert webview.composition_visible(True) is False
+
+
 def test_invalid_arguments_raise_python_exceptions(webview, tmp_path):
     with pytest.raises(TypeError):
         pyminiwebview.WebView(width="wide")
     with pytest.raises(ValueError):
         pyminiwebview.WebView(window=0x7FFFFFFF00000000)
+    with pytest.raises(ValueError):
+        pyminiwebview.WebView(composition_hosting=True)
     with pytest.raises(ValueError):
         pyminiwebview.WebView(clipboard_permission="always")
     with pytest.raises(ValueError):

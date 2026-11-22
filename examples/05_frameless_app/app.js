@@ -42,6 +42,17 @@ byId('btn-min').addEventListener('click', () => {
   __window_minimize();
 });
 byId('btn-max').addEventListener('click', () => __window_toggle_maximize());
+const maximizeButton = byId('btn-max');
+function syncMaximizeRegion() {
+  const rect = maximizeButton.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  __window_set_maximize_rect(
+    rect.left * scale, rect.top * scale, rect.right * scale, rect.bottom * scale
+  );
+}
+new ResizeObserver(syncMaximizeRegion).observe(maximizeButton);
+window.addEventListener('resize', syncMaximizeRegion);
+syncMaximizeRegion();
 byId('btn-close').addEventListener('click', () => __window_close());
 byId('titlebar').addEventListener('mousedown', event => {
   if (event.button === 0 && !event.target.closest('button')) __window_start_move();

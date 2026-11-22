@@ -63,7 +63,7 @@ jobs:
           }
       - name: Verify real WebView2 lifecycle
         run: >-
-          python -c "import os, pyminiwebview; assert pyminiwebview.__version__ == '0.1.7'; view = pyminiwebview.WebView(user_data_folder=os.path.abspath('.webview-abi3-test')); view.configure_app_mode(); view.notify_parent_position(); view.close(); print(pyminiwebview.__version__)"
+          python -c "import os, pyminiwebview; assert pyminiwebview.__version__ == '0.1.8'; view = pyminiwebview.WebView(user_data_folder=os.path.abspath('.webview-abi3-test')); view.configure_app_mode(); view.notify_parent_position(); view.close(); print(pyminiwebview.__version__)"
 
   publish:
     if: github.event_name == 'release' && github.event.action == 'published'
