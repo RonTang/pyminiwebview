@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
         ("03_background_task.py", "thread, dispatch and completion OK"),
         ("05_frameless_app/app.py", "startup, bridge and clean exit OK"),
         ("07_async_bridge.py", "concurrent calls and clean shutdown OK"),
+        ("08_desk_pet.py", "transparency, animation and clean exit OK"),
     ],
 )
 def test_example_smoke_startup_interaction_and_clean_exit(example, marker):

@@ -5,9 +5,12 @@
 
 #include <dcomp.h>
 #include <windowsx.h>
+#include <wrl.h>
 
 #include <atomic>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 
 class CompositionCreateHandler final
@@ -52,8 +55,12 @@ public:
   HRESULT STDMETHODCALLTYPE
   Invoke(HRESULT result,
          ICoreWebView2CompositionController *controller) override {
-    m_callback(result, controller);
-    return S_OK;
+    try {
+      m_callback(result, controller);
+      return S_OK;
+    } catch (...) {
+      return E_UNEXPECTED;
+    }
   }
 
 private:
@@ -146,6 +153,28 @@ private:
 
 class CompositionWebViewEngine final
     : public webview::detail::win32_edge_engine {
+  struct AsyncOperationState {
+    std::mutex mutex;
+    bool done = false;
+    bool cancelled = false;
+  };
+
+  struct CompositionCreateState : AsyncOperationState {
+    ~CompositionCreateState() {
+      if (controller != nullptr) {
+        controller->Release();
+      }
+    }
+
+    HRESULT completion = E_FAIL;
+    ICoreWebView2CompositionController *controller = nullptr;
+  };
+
+  struct AddScriptState : AsyncOperationState {
+    HRESULT completion = E_FAIL;
+    std::wstring script_id;
+  };
+
 public:
   CompositionWebViewEngine(bool debug, void *window,
                            const char *user_data_folder, const char *app_name,
@@ -363,19 +392,54 @@ protected:
   webview::detail::user_script
   add_user_script_impl(const std::string &js) override {
     auto wide_js = webview::detail::widen_string(js);
-    std::wstring script_id;
-    bool done = false;
-    webview::detail::webview2_user_script_added_handler handler{
-        [&](HRESULT result, LPCWSTR id) {
-          if (SUCCEEDED(result)) {
-            script_id = id;
+    auto state = std::make_shared<AddScriptState>();
+    auto *handler = new webview::detail::webview2_user_script_added_handler{
+        [state](HRESULT result, LPCWSTR id) {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          if (state->cancelled) {
+            return;
           }
-          done = true;
+          state->completion = result;
+          if (SUCCEEDED(result)) {
+            if (id == nullptr) {
+              state->completion = E_FAIL;
+            } else {
+              try {
+                state->script_id = id;
+              } catch (...) {
+                state->completion = E_OUTOFMEMORY;
+              }
+            }
+          }
+          state->done = true;
         }};
     HRESULT result = m_webview->AddScriptToExecuteOnDocumentCreated(
-        wide_js.c_str(), &handler);
-    if (SUCCEEDED(result)) {
-      pump_until(done);
+        wide_js.c_str(), handler);
+    handler->Release();
+    if (FAILED(result)) {
+      cancel_async(*state);
+      throw webview::exception{
+          WEBVIEW_ERROR_UNSPECIFIED,
+          "AddScriptToExecuteOnDocumentCreated failed"};
+    }
+    try {
+      pump_until(*state);
+    } catch (...) {
+      cancel_async(*state);
+      throw;
+    }
+    std::wstring script_id;
+    HRESULT completion;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      script_id = state->script_id;
+      completion = state->completion;
+    }
+    if (FAILED(completion)) {
+      throw webview::exception{
+          WEBVIEW_ERROR_UNSPECIFIED,
+          "WebView2 user script creation failed (HRESULT " +
+              std::to_string(static_cast<long>(completion)) + ")"};
     }
     return webview::detail::user_script{
         js, std::unique_ptr<webview::detail::user_script::impl>(
@@ -404,8 +468,19 @@ private:
     }
   }
 
-  static void pump_until(bool &done) {
-    while (!done) {
+  static void cancel_async(AsyncOperationState &state) {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.cancelled = true;
+  }
+
+  static void pump_until(AsyncOperationState &state) {
+    for (;;) {
+      {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        if (state.done) {
+          return;
+        }
+      }
       MSG message;
       BOOL result = GetMessageW(&message, nullptr, 0, 0);
       if (result <= 0) {
@@ -428,33 +503,50 @@ private:
         static_cast<ICoreWebView2Controller *>(regular_result.value());
     regular_controller->AddRef();
     m_regular_controller = regular_controller;
-    ICoreWebView2 *regular_core = nullptr;
-    require(regular_controller->get_CoreWebView2(&regular_core));
-    ICoreWebView2_2 *core2 = nullptr;
-    require(regular_core->QueryInterface(IID_PPV_ARGS(&core2)));
-    regular_core->Release();
-    ICoreWebView2Environment *environment = nullptr;
-    require(core2->get_Environment(&environment));
-    core2->Release();
+    Microsoft::WRL::ComPtr<ICoreWebView2> regular_core;
+    require(regular_controller->get_CoreWebView2(regular_core.GetAddressOf()));
+    Microsoft::WRL::ComPtr<ICoreWebView2_2> core2;
+    require(regular_core->QueryInterface(IID_PPV_ARGS(core2.GetAddressOf())));
+    Microsoft::WRL::ComPtr<ICoreWebView2Environment> environment;
+    require(core2->get_Environment(environment.GetAddressOf()));
     require(environment->QueryInterface(IID_PPV_ARGS(&m_environment)));
-    environment->Release();
 
-    bool done = false;
-    HRESULT completion = E_FAIL;
+    auto state = std::make_shared<CompositionCreateState>();
     auto *handler = new CompositionCreateHandler{
-        [&](HRESULT result, ICoreWebView2CompositionController *controller) {
-          completion = result;
+        [state](HRESULT result, ICoreWebView2CompositionController *controller) {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          if (state->cancelled) {
+            return;
+          }
+          state->completion = result;
           if (SUCCEEDED(result) && controller != nullptr) {
             controller->AddRef();
-            m_composition = controller;
+            state->controller = controller;
+          } else if (SUCCEEDED(result)) {
+            state->completion = E_FAIL;
           }
-          done = true;
+          state->done = true;
         }};
     HRESULT create_result = m_environment->CreateCoreWebView2CompositionController(
         m_host, handler);
     handler->Release();
+    if (FAILED(create_result)) {
+      cancel_async(*state);
+    }
     require(create_result);
-    pump_until(done);
+    try {
+      pump_until(*state);
+    } catch (...) {
+      cancel_async(*state);
+      throw;
+    }
+    HRESULT completion;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      completion = state->completion;
+      m_composition = state->controller;
+      state->controller = nullptr;
+    }
     require(completion);
     if (m_composition == nullptr) {
       require(E_FAIL);

@@ -16,6 +16,7 @@ from pyminiwebview_win32 import (
     TrayIcon,
     open_file_dialog,
     save_file_dialog,
+    set_click_through,
 )
 from pyminiwebview_win32 import dialogs
 from pyminiwebview_win32 import frameless
@@ -204,6 +205,114 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
         window.close()
     assert not user32.IsWindow(hwnd)
     window.close()
+
+
+def test_transparent_frameless_is_topmost_toolwindow_with_click_through(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        frameless._dwmapi, "DwmSetWindowAttribute",
+        lambda *_args: pytest.fail("transparent mode must not configure DWM"),
+    )
+    monkeypatch.setattr(
+        frameless._dwmapi, "DwmExtendFrameIntoClientArea",
+        lambda *_args: pytest.fail("transparent mode must not extend DWM glass"),
+    )
+    monkeypatch.setattr(
+        frameless._dwmapi, "DwmDefWindowProc",
+        lambda *_args: pytest.fail("transparent mode must not call DWM hit testing"),
+    )
+    window = FramelessWindow(
+        title="pyminiwebview pytest transparent",
+        width=320,
+        height=320,
+        min_width=320,
+        min_height=320,
+        app_name="pyminiwebview-pytest-transparent",
+        user_data_folder=str(tmp_path / "webview-data"),
+        transparent=True,
+        topmost=True,
+    )
+    hwnd = window.hwnd
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.IsWindow.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.WindowFromPoint.argtypes = [wintypes.POINT]
+    user32.WindowFromPoint.restype = wintypes.HWND
+    window.on_maximize_change = lambda _maximized: window.view.terminate()
+    watchdog = threading.Timer(10, window.view.terminate)
+    try:
+        style = user32.GetWindowLongPtrW(hwnd, frameless._GWL_EXSTYLE)
+        assert style & frameless._WS_EX_TOOLWINDOW
+        assert style & frameless._WS_EX_TOPMOST
+        assert not style & 0x00080000
+        assert window._window_style() == frameless._WS_POPUP
+        assert window._background_brush is None
+        assert window._resize_overlays == {}
+        assert window.toggle_maximize() is False
+        assert window.start_resize("br") is False
+        assert window._wndproc(hwnd, frameless._WM_NCHITTEST, 0, 0) == (
+            frameless._HTCLIENT
+        )
+        assert window._wndproc(hwnd, frameless._WM_ERASEBKGND, 0, 0) == 1
+
+        assert window.set_click_through(True) is True
+        style = user32.GetWindowLongPtrW(hwnd, frameless._GWL_EXSTYLE)
+        assert style & frameless._WS_EX_TRANSPARENT
+        assert set_click_through(hwnd, False) is False
+        style = user32.GetWindowLongPtrW(hwnd, frameless._GWL_EXSTYLE)
+        assert not style & frameless._WS_EX_TRANSPARENT
+        assert style & frameless._WS_EX_LAYERED
+        assert style & frameless._WS_EX_TOOLWINDOW
+        assert style & frameless._WS_EX_TOPMOST
+
+        window.view.set_html(
+            "<style>html,body{background:transparent}</style><p>transparent</p>"
+        )
+        watchdog.start()
+        window.run()
+        assert window.ready
+        assert user32.IsWindowVisible(hwnd)
+        rect = wintypes.RECT()
+        assert user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        point = wintypes.POINT(
+            (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2
+        )
+        assert user32.WindowFromPoint(point) == hwnd
+        window.set_click_through(True)
+        assert user32.WindowFromPoint(point) != hwnd
+        window.set_click_through(False)
+        assert user32.WindowFromPoint(point) == hwnd
+    finally:
+        watchdog.cancel()
+        window.close()
+    assert not user32.IsWindow(hwnd)
+
+
+def test_repeated_composition_create_script_and_close(tmp_path):
+    for index in range(8):
+        window = FramelessWindow(
+            title=f"pyminiwebview pytest composition {index}",
+            width=320,
+            height=320,
+            min_width=320,
+            min_height=320,
+            resizable=False,
+            app_name=f"pyminiwebview-pytest-composition-{index}",
+            user_data_folder=str(tmp_path / f"webview-data-{index}"),
+            transparent=bool(index % 2),
+        )
+        try:
+            assert window.view.composition_resize() is True
+            window.view.js_init("window.__composition_test = true;")
+            window.view.set_html("<p>composition</p>")
+        finally:
+            window.close()
 
 
 def test_fixed_frameless_window_disables_resizing_and_maximize():
@@ -566,6 +675,12 @@ def test_frameless_window_validates_dimensions():
         FramelessWindow(resizable=1)
     with pytest.raises(TypeError, match="dark_mode"):
         FramelessWindow(dark_mode=1)
+    with pytest.raises(TypeError, match="transparent"):
+        FramelessWindow(transparent=1)
+    with pytest.raises(TypeError, match="topmost"):
+        FramelessWindow(topmost=1)
+    with pytest.raises(TypeError, match="on"):
+        set_click_through(123, 1)
     with pytest.raises(ValueError, match="normal.*rect.*rect_corner.*rect_shadow"):
         FramelessWindow(frame="round_borderless")
     with pytest.raises(TypeError, match="shadow"):

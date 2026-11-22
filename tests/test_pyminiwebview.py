@@ -1,6 +1,9 @@
 import ctypes
 import gc
 import json
+import os
+from pathlib import Path
+import subprocess
 import sys
 import threading
 import time
@@ -12,6 +15,61 @@ if sys.platform != "win32":
     pytest.skip("pyminiwebview only supports Windows", allow_module_level=True)
 
 import pyminiwebview
+
+
+class COREWEBVIEW2_COLOR(ctypes.Structure):
+    _fields_ = [
+        ("A", wintypes.BYTE), ("R", wintypes.BYTE),
+        ("G", wintypes.BYTE), ("B", wintypes.BYTE),
+    ]
+
+
+def com_method(instance, index, restype, *argtypes):
+    vtable = ctypes.c_void_p.from_address(instance).value
+    address = ctypes.c_void_p.from_address(
+        vtable + index * ctypes.sizeof(ctypes.c_void_p)
+    ).value
+    return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(address)
+
+
+def default_background_color(view):
+    controller = view.get_native_handle(
+        pyminiwebview.NATIVE_HANDLE_KIND_BROWSER_CONTROLLER
+    )
+    getter = com_method(
+        controller, 26, ctypes.c_long, ctypes.POINTER(COREWEBVIEW2_COLOR)
+    )
+    color = COREWEBVIEW2_COLOR()
+    assert getter(controller, ctypes.byref(color)) == 0
+    return color.A, color.R, color.G, color.B
+
+
+def default_context_menus_enabled(view):
+    controller = view.get_native_handle(
+        pyminiwebview.NATIVE_HANDLE_KIND_BROWSER_CONTROLLER
+    )
+    core = ctypes.c_void_p()
+    settings = ctypes.c_void_p()
+    get_core = com_method(
+        controller, 25, ctypes.c_long, ctypes.POINTER(ctypes.c_void_p)
+    )
+    assert get_core(controller, ctypes.byref(core)) == 0
+    try:
+        get_settings = com_method(
+            core.value, 3, ctypes.c_long, ctypes.POINTER(ctypes.c_void_p)
+        )
+        assert get_settings(core, ctypes.byref(settings)) == 0
+        try:
+            get_enabled = com_method(
+                settings.value, 13, ctypes.c_long, ctypes.POINTER(wintypes.BOOL)
+            )
+            enabled = wintypes.BOOL()
+            assert get_enabled(settings, ctypes.byref(enabled)) == 0
+            return bool(enabled.value)
+        finally:
+            com_method(settings.value, 2, wintypes.ULONG)(settings)
+    finally:
+        com_method(core.value, 2, wintypes.ULONG)(core)
 
 
 def window_exists(hwnd):
@@ -101,6 +159,66 @@ def test_standalone_reveals_first_frame_at_requested_size(tmp_path):
         stop_polling.set()
         watchdog.cancel()
         instance.close()
+
+
+@pytest.mark.parametrize("transparent, expected_alpha", [(False, 255), (True, 0)])
+def test_background_color_preserves_rgb_and_sets_alpha(
+        tmp_path, transparent, expected_alpha):
+    instance = pyminiwebview.WebView(
+        bgcolor=0x123456,
+        transparent=transparent,
+        user_data_folder=str(tmp_path / "webview-data"),
+    )
+    try:
+        assert default_background_color(instance) == (
+            expected_alpha, 0x56, 0x34, 0x12
+        )
+    finally:
+        instance.close()
+
+
+def test_initialization_reposts_quit_for_outer_message_loop(tmp_path):
+    script = r"""
+import ctypes
+import sys
+from ctypes import wintypes
+import pyminiwebview
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+user32.PostQuitMessage.argtypes = [ctypes.c_int]
+user32.PeekMessageW.argtypes = [
+    ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+    wintypes.UINT, wintypes.UINT, wintypes.UINT,
+]
+user32.PeekMessageW.restype = wintypes.BOOL
+user32.PostQuitMessage(37)
+try:
+    pyminiwebview.WebView(user_data_folder=sys.argv[1])
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("WM_QUIT must cancel WebView initialization")
+message = wintypes.MSG()
+assert user32.PeekMessageW(ctypes.byref(message), None, 0x0012, 0x0012, 1)
+assert message.message == 0x0012
+assert message.wParam == 37
+print("quit preserved")
+"""
+    environment = os.environ.copy()
+    source_dir = str(Path(__file__).resolve().parent.parent / "src")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [source_dir, environment.get("PYTHONPATH")])
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "cancelled-data")],
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "quit preserved" in result.stdout
 
 
 def test_bind_navigate_destroy_refcount_is_stable(webview):
@@ -302,8 +420,13 @@ def test_dispatch_terminate_and_close_are_synchronized(tmp_path):
 
 
 def test_configure_app_mode_smoke(webview):
+    assert default_context_menus_enabled(webview) is True
     webview.configure_app_mode()
     webview.configure_app_mode()
+    assert default_context_menus_enabled(webview) is False
+    webview.configure_app_mode(disable_default_context_menus=False)
+    webview.configure_app_mode()
+    assert default_context_menus_enabled(webview) is False
 
 
 def test_notify_parent_position(webview):

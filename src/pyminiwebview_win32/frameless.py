@@ -58,6 +58,7 @@ _SW_SHOWNOACTIVATE = 4
 _SW_SHOW = 5
 _SW_MINIMIZE = 6
 _SW_RESTORE = 9
+_SWP_NOSIZE = 0x0001
 _SWP_NOMOVE = 0x0002
 _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
@@ -120,6 +121,7 @@ _MOUSE_DOWN_MESSAGES = frozenset({
 _MOUSE_UP_MESSAGES = frozenset({
     _WM_LBUTTONUP, _WM_RBUTTONUP, _WM_MBUTTONUP, _WM_XBUTTONUP,
 })
+_WS_POPUP = 0x80000000
 _WS_CHILD = 0x40000000
 _WS_VISIBLE = 0x10000000
 _WS_CLIPSIBLINGS = 0x04000000
@@ -127,6 +129,12 @@ _WS_CAPTION = 0x00C00000
 _WS_OVERLAPPEDWINDOW = 0x00CF0000
 _WS_THICKFRAME = 0x00040000
 _WS_MAXIMIZEBOX = 0x00010000
+_WS_EX_TOPMOST = 0x00000008
+_WS_EX_TRANSPARENT = 0x00000020
+_WS_EX_LAYERED = 0x00080000
+_WS_EX_TOOLWINDOW = 0x00000080
+_GWL_EXSTYLE = -20
+_HWND_TOPMOST = ctypes.c_void_p(-1).value
 _ERROR_ACCESS_DENIED = 5
 _NON_RUDE_PROPERTY = "NonRudeHWND"
 _LONG_PTR = ctypes.c_ssize_t
@@ -223,6 +231,12 @@ _user32.SetWindowPos.argtypes = [
     ctypes.c_int, ctypes.c_int, wintypes.UINT,
 ]
 _user32.SetWindowPos.restype = wintypes.BOOL
+_user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+_user32.GetWindowLongPtrW.restype = _LONG_PTR
+_user32.SetWindowLongPtrW.argtypes = [
+    wintypes.HWND, ctypes.c_int, _LONG_PTR,
+]
+_user32.SetWindowLongPtrW.restype = _LONG_PTR
 _user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 _user32.GetWindowRect.restype = wintypes.BOOL
 _user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
@@ -336,6 +350,33 @@ def _enable_dpi_awareness():
         )
 
 
+def set_click_through(hwnd, on):
+    if not isinstance(on, bool):
+        raise TypeError("on must be a bool")
+    ctypes.set_last_error(0)
+    style = _user32.GetWindowLongPtrW(hwnd, _GWL_EXSTYLE)
+    error = ctypes.get_last_error()
+    if style == 0 and error:
+        raise ctypes.WinError(error)
+    if on:
+        updated = style | _WS_EX_TRANSPARENT | _WS_EX_LAYERED
+    else:
+        updated = style & ~_WS_EX_TRANSPARENT
+    if updated != style:
+        ctypes.set_last_error(0)
+        if _user32.SetWindowLongPtrW(hwnd, _GWL_EXSTYLE, updated) == 0:
+            error = ctypes.get_last_error()
+            if error:
+                raise ctypes.WinError(error)
+        if not _user32.SetWindowPos(
+            hwnd, None, 0, 0, 0, 0,
+            _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE |
+            _SWP_FRAMECHANGED,
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+    return on
+
+
 class FramelessWindow:
     """Own a Win32 host, an embedded WebView, and its JS controls.
 
@@ -346,7 +387,12 @@ class FramelessWindow:
     shadow. ``frame="rect_shadow"`` selects square corners, no border, and a
     shadow. Windows 10 uses top glass and native non-client messages to retain the
     shadow and system transitions. Unsupported DWM attributes are ignored safely.
+    ``transparent=True`` selects a separate per-pixel-alpha desktop-pet mode
+    without DWM framing, resizing, a taskbar button, or activation on reveal.
     """
+
+    _transparent = False
+    _topmost = False
 
     def __init__(
         self,
@@ -362,6 +408,8 @@ class FramelessWindow:
         frame="normal",
         dark_mode=False,
         bgcolor=0xFFFFFF,
+        transparent=False,
+        topmost=False,
         user_data_folder=None,
         clipboard_permission="default",
         on_maximize_change=None,
@@ -374,6 +422,10 @@ class FramelessWindow:
             raise TypeError("resizable must be a bool")
         if not isinstance(dark_mode, bool):
             raise TypeError("dark_mode must be a bool")
+        if not isinstance(transparent, bool):
+            raise TypeError("transparent must be a bool")
+        if not isinstance(topmost, bool):
+            raise TypeError("topmost must be a bool")
         if frame == "round":
             frame = "normal"
         elif frame == "square_shadow":
@@ -400,6 +452,8 @@ class FramelessWindow:
         self._frame = frame
         self._dark_mode = dark_mode
         self._bgcolor = bgcolor
+        self._transparent = transparent
+        self._topmost = topmost
         self._dwm_frame_width = None
         self._applied_dwm_border_color = None
         self._nc_active = False
@@ -447,12 +501,24 @@ class FramelessWindow:
         return max(1, value - 1)
 
     def _use_dwm_frame(self):
-        return not _is_windows_10() and self._frame not in ("rect", "rect_corner")
+        return (
+            not self._transparent
+            and not _is_windows_10()
+            and self._frame not in ("rect", "rect_corner")
+        )
 
     def _window_style(self):
+        if self._transparent:
+            return _WS_POPUP
         style = _WS_OVERLAPPEDWINDOW
         if not self._resizable:
             style &= ~(_WS_THICKFRAME | _WS_MAXIMIZEBOX)
+        return style
+
+    def _window_ex_style(self):
+        style = _WS_EX_TOOLWINDOW if self._transparent else 0
+        if self._topmost:
+            style |= _WS_EX_TOPMOST
         return style
 
     def _corner_preference(self):
@@ -467,7 +533,7 @@ class FramelessWindow:
         )
 
     def _has_shadow(self):
-        return self._frame not in ("rect", "rect_corner")
+        return not self._transparent and self._frame not in ("rect", "rect_corner")
 
     def _set_dwm_attribute(self, attribute, value):
         _dwmapi.DwmSetWindowAttribute(
@@ -475,7 +541,7 @@ class FramelessWindow:
         )
 
     def _extend_dwm_frame(self):
-        if not self.hwnd:
+        if not self.hwnd or self._transparent:
             return
         width = int(not _user32.IsZoomed(self.hwnd) and self._has_shadow())
         side = width
@@ -498,6 +564,8 @@ class FramelessWindow:
         )
 
     def _apply_dwm_frame_policy(self):
+        if self._transparent:
+            return
         policy = (
             _DWMNCRP_DISABLED
             if self._frame == "rect_corner"
@@ -514,7 +582,7 @@ class FramelessWindow:
         return _DWMWA_COLOR_DEFAULT
 
     def _apply_dwm_border_color(self):
-        if not self.hwnd:
+        if not self.hwnd or self._transparent:
             return
         color = self._resolve_border_color()
         if color == self._applied_dwm_border_color:
@@ -640,7 +708,7 @@ class FramelessWindow:
         return _user32.DefWindowProcW(hwnd, message, wparam, lparam)
 
     def _native_hit_test(self, lparam):
-        if not self._resizable or _user32.IsZoomed(self.hwnd):
+        if self._transparent or not self._resizable or _user32.IsZoomed(self.hwnd):
             return _HTCLIENT
         x = ctypes.c_short(lparam & 0xFFFF).value
         y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
@@ -752,9 +820,10 @@ class FramelessWindow:
 
     def _create(self):
         _enable_dpi_awareness()
-        self._background_brush = _gdi32.CreateSolidBrush(self._bgcolor)
-        if not self._background_brush:
-            raise ctypes.WinError(ctypes.get_last_error())
+        if not self._transparent:
+            self._background_brush = _gdi32.CreateSolidBrush(self._bgcolor)
+            if not self._background_brush:
+                raise ctypes.WinError(ctypes.get_last_error())
         self._class_atom = self._register_window_class(
             self._class_name, self._wndproc_ref, self._background_brush
         )
@@ -772,19 +841,25 @@ class FramelessWindow:
         ) // 2
         style = self._window_style()
         self.hwnd = _user32.CreateWindowExW(
-            0, self._class_name, self._title, style,
+            self._window_ex_style(), self._class_name, self._title, style,
             x, y, self._width, self._height,
             None, None, self._hinstance, None,
         )
         if not self.hwnd:
             raise ctypes.WinError(ctypes.get_last_error())
         _user32.SetPropW(self.hwnd, _NON_RUDE_PROPERTY, ctypes.c_void_p(1))
+        if self._topmost and not _user32.SetWindowPos(
+            self.hwnd, _HWND_TOPMOST, 0, 0, 0, 0,
+            _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE,
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
 
-        self._apply_corner_preference()
-        self._apply_dark_mode()
-        self._apply_dwm_frame_policy()
-        self._extend_dwm_frame()
-        self._apply_dwm_border_color()
+        if not self._transparent:
+            self._apply_corner_preference()
+            self._apply_dark_mode()
+            self._apply_dwm_frame_policy()
+            self._extend_dwm_frame()
+            self._apply_dwm_border_color()
         self.view = pyminiwebview.WebView(
             window=self.hwnd,
             autosize=False,
@@ -796,11 +871,12 @@ class FramelessWindow:
             user_data_folder=self._user_data_folder,
             clipboard_permission=self._clipboard_permission,
             composition_hosting=True,
+            transparent=self._transparent,
         )
         self._widget = self.view.get_native_handle(
             pyminiwebview.NATIVE_HANDLE_KIND_UI_WIDGET
         )
-        if self._resizable:
+        if self._resizable and not self._transparent:
             self._create_native_resize()
         if not _user32.SetWindowPos(
             self.hwnd, None, 0, 0,
@@ -837,13 +913,16 @@ class FramelessWindow:
     def reveal(self):
         if not self.hwnd or not self.view:
             return False
-        _user32.ShowWindow(self.hwnd, _SW_SHOW)
+        _user32.ShowWindow(
+            self.hwnd, _SW_SHOWNOACTIVATE if self._transparent else _SW_SHOW
+        )
         _user32.UpdateWindow(self.hwnd)
         self.ready = True
         self._dwm_frame_width = None
         self._extend_dwm_frame()
-        _user32.SetForegroundWindow(self.hwnd)
-        self.view.set_focus()
+        if not self._transparent:
+            _user32.SetForegroundWindow(self.hwnd)
+            self.view.set_focus()
         self._update_win10_normal_border()
         self._notify_maximized_state()
         return True
@@ -855,7 +934,7 @@ class FramelessWindow:
         return True
 
     def toggle_maximize(self):
-        if not self.hwnd or not self._resizable:
+        if not self.hwnd or self._transparent or not self._resizable:
             return False
         _user32.ShowWindow(
             self.hwnd, _SW_RESTORE if _user32.IsZoomed(self.hwnd) else _SW_MAXIMIZE
@@ -874,6 +953,11 @@ class FramelessWindow:
             if right > left and bottom > top else None
         )
         return True
+
+    def set_click_through(self, on):
+        if not self.hwnd:
+            return False
+        return set_click_through(self.hwnd, on)
 
     def close_window(self):
         if not self.hwnd:
@@ -916,6 +1000,7 @@ class FramelessWindow:
     def start_resize(self, direction):
         if (
             not self.hwnd
+            or self._transparent
             or not self._resizable
             or direction not in _HT_CODES
             or _user32.IsZoomed(self.hwnd)
@@ -1022,6 +1107,13 @@ class FramelessWindow:
         return 0
 
     def _wndproc(self, hwnd, message, wparam, lparam):
+        if self._transparent:
+            if message == _WM_ERASEBKGND:
+                return 1
+            if message == _WM_NCHITTEST:
+                return _HTCLIENT
+            if message in (_WM_NCPAINT, _WM_NCACTIVATE):
+                return 1 if message == _WM_NCACTIVATE else 0
         if message == _WM_NCCALCSIZE:
             return self._handle_nc_calc_size(hwnd, wparam, lparam)
         if (
@@ -1108,6 +1200,9 @@ class FramelessWindow:
             self._update_win10_normal_border()
             self._notify_maximized_state()
         elif message == _WM_CLOSE:
+            if self.bridge:
+                self.bridge.close()
+                self.bridge = None
             _user32.DestroyWindow(hwnd)
             return 0
         elif message == _WM_DESTROY:
@@ -1134,11 +1229,11 @@ class FramelessWindow:
         if self._resize_direction:
             self._finish_resize()
             _user32.ReleaseCapture()
-        if self.hwnd:
-            _user32.DestroyWindow(self.hwnd)
         if self.bridge:
             self.bridge.close()
             self.bridge = None
+        if self.hwnd:
+            _user32.DestroyWindow(self.hwnd)
         if self.view:
             self.view.close()
             self.view = None

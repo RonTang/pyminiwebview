@@ -3666,6 +3666,11 @@ public:
     webview->add_PermissionRequested(this, &token);
 
     m_cb(controller, webview);
+// ==== pyminiwebview patch begin ====
+// Lifecycle hardening: balance get_CoreWebView2's output reference.
+// Dependency: WebView_init and WebView_close in src/pyminiwebview/_module.cpp.
+    webview->Release();
+// ==== pyminiwebview patch end ====
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE
@@ -4351,6 +4356,11 @@ private:
       DispatchMessageW(&msg);
     }
     if (got_quit_msg) {
+// ==== pyminiwebview patch begin ====
+// Lifecycle hardening: preserve cancellation for an outer message loop.
+// Dependency: WebView_init and WebView_run in src/pyminiwebview/_module.cpp.
+      PostQuitMessage(static_cast<int>(msg.wParam));
+// ==== pyminiwebview patch end ====
       return error_info{WEBVIEW_ERROR_CANCELED};
     }
     if (!m_controller || !m_webview) {
@@ -4363,10 +4373,20 @@ private:
     }
     res = settings->put_AreDevToolsEnabled(debug ? TRUE : FALSE);
     if (res != S_OK) {
+// ==== pyminiwebview patch begin ====
+// Lifecycle hardening: release settings on configuration failure.
+// Dependency: WebView_init and WebView_close in src/pyminiwebview/_module.cpp.
+      settings->Release();
+// ==== pyminiwebview patch end ====
       return error_info{WEBVIEW_ERROR_UNSPECIFIED,
                         "put_AreDevToolsEnabled failed"};
     }
     res = settings->put_IsStatusBarEnabled(FALSE);
+// ==== pyminiwebview patch begin ====
+// Lifecycle hardening: balance get_Settings after the final settings call.
+// Dependency: WebView_init and WebView_close in src/pyminiwebview/_module.cpp.
+    settings->Release();
+// ==== pyminiwebview patch end ====
     if (res != S_OK) {
       return error_info{WEBVIEW_ERROR_UNSPECIFIED,
                         "put_IsStatusBarEnabled failed"};

@@ -619,7 +619,7 @@ static int focus_webview(WebViewObject *self) {
   return 0;
 }
 
-static int set_background_color(WebViewObject *self, COLORREF color) {
+static int set_background_color(WebViewObject *self, COLORREF color, BYTE alpha) {
   void *handle = webview_get_native_handle(
       self->webview, WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER);
   if (handle == nullptr) {
@@ -636,7 +636,7 @@ static int set_background_color(WebViewObject *self, COLORREF color) {
     return -1;
   }
   COREWEBVIEW2_COLOR background{};
-  background.A = 255;
+  background.A = alpha;
   background.R = GetRValue(color);
   background.G = GetGValue(color);
   background.B = GetBValue(color);
@@ -692,6 +692,7 @@ static int configure_startup_reveal(WebViewObject *self) {
 
 static int configure_app_mode(WebViewObject *self,
                               int disable_browser_accelerators,
+                              int disable_default_context_menus,
                               int disable_nc_region_support,
                               int redirect_new_window_to_system_browser) {
   void *handle = webview_get_native_handle(
@@ -732,6 +733,17 @@ static int configure_app_mode(WebViewObject *self,
       return set_webview2_error(
           "put_AreBrowserAcceleratorKeysEnabled for "
           "disable_browser_accelerators",
+          result);
+    }
+  }
+
+  if (disable_default_context_menus) {
+    result = settings->put_AreDefaultContextMenusEnabled(VARIANT_FALSE);
+    if (FAILED(result)) {
+      settings->Release();
+      core->Release();
+      return set_webview2_error(
+          "put_AreDefaultContextMenusEnabled for disable_default_context_menus",
           result);
     }
   }
@@ -883,18 +895,21 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
   const char *app_name = "pyminiwebview";
   const char *clipboard_permission = "default";
   int composition_hosting = 0;
+  int transparent = 0;
   static char *keywords[] = {
       (char *)"debug",       (char *)"window",       (char *)"autosize",
       (char *)"width",       (char *)"height",       (char *)"url",
       (char *)"title",       (char *)"icon",         (char *)"bgcolor",
       (char *)"user_data_folder", (char *)"app_name",
-      (char *)"clipboard_permission", (char *)"composition_hosting", nullptr};
+      (char *)"clipboard_permission", (char *)"composition_hosting",
+      (char *)"transparent", nullptr};
 
-  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|pKpiizzzIzzsp:WebView", keywords,
+  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|pKpiizzzIzzspp:WebView", keywords,
                                    &debug, &window, &autosize, &width, &height,
                                    &url, &title, &icon, &bgcolor,
                                    &user_data_folder, &app_name,
-                                   &clipboard_permission, &composition_hosting)) {
+                                   &clipboard_permission, &composition_hosting,
+                                   &transparent)) {
     return -1;
   }
   self->ui_thread = GetCurrentThreadId();
@@ -953,7 +968,8 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
     return -1;
   }
 
-  if (set_background_color(self, static_cast<COLORREF>(bgcolor)) < 0) {
+  if (set_background_color(self, static_cast<COLORREF>(bgcolor),
+                           transparent ? 0 : 255) < 0) {
     goto error;
   }
   self->parent = parent;
@@ -1075,22 +1091,24 @@ static PyObject *WebView_exit(WebViewObject *self, PyObject *args) {
 static PyObject *WebView_configure_app_mode(WebViewObject *self, PyObject *args,
                                             PyObject *kwds) {
   int disable_browser_accelerators = 1;
+  int disable_default_context_menus = 1;
   int disable_nc_region_support = 1;
   int redirect_new_window_to_system_browser = 1;
   static char *keywords[] = {
       (char *)"disable_browser_accelerators",
+      (char *)"disable_default_context_menus",
       (char *)"disable_nc_region_support",
       (char *)"redirect_new_window_to_system_browser",
       nullptr};
   if (!PyArg_ParseTupleAndKeywords(
-          args, kwds, "|ppp:configure_app_mode", keywords,
-          &disable_browser_accelerators, &disable_nc_region_support,
-          &redirect_new_window_to_system_browser)) {
+          args, kwds, "|pppp:configure_app_mode", keywords,
+          &disable_browser_accelerators, &disable_default_context_menus,
+          &disable_nc_region_support, &redirect_new_window_to_system_browser)) {
     return nullptr;
   }
   if (require_webview(self) < 0 ||
       configure_app_mode(self, disable_browser_accelerators,
-                         disable_nc_region_support,
+                         disable_default_context_menus, disable_nc_region_support,
                          redirect_new_window_to_system_browser) < 0) {
     return nullptr;
   }
@@ -1679,7 +1697,7 @@ PyMODINIT_FUNC PyInit_pyminiwebview(void) {
                    WEBVIEW_NATIVE_HANDLE_KIND_UI_WIDGET) < 0 ||
       add_constant(module, "NATIVE_HANDLE_KIND_BROWSER_CONTROLLER",
                    WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER) < 0 ||
-      PyModule_AddStringConstant(module, "__version__", "0.1.8") < 0) {
+      PyModule_AddStringConstant(module, "__version__", "0.1.9") < 0) {
     Py_DECREF(module);
     return nullptr;
   }

@@ -1,8 +1,6 @@
-diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
-index e14eb5b..a16d561 100644
 --- a/vendor/webview/webview.h
 +++ b/vendor/webview/webview.h
-@@ -239,6 +239,15 @@ extern "C" {
+@@ -239,6 +239,15 @@
   */
  WEBVIEW_API webview_t webview_create(int debug, void *window);
  
@@ -18,7 +16,7 @@ index e14eb5b..a16d561 100644
  /**
   * Destroys a webview instance and closes the native window.
   *
-@@ -252,6 +261,12 @@ WEBVIEW_API webview_error_t webview_destroy(webview_t w);
+@@ -252,6 +261,12 @@
   * @param w The webview instance.
   */
  WEBVIEW_API webview_error_t webview_run(webview_t w);
@@ -31,7 +29,7 @@ index e14eb5b..a16d561 100644
  
  /**
   * Stops the main loop. It is safe to call this function from another other
-@@ -3569,8 +3584,15 @@ class webview2_com_handler
+@@ -3569,8 +3584,15 @@
        std::function<void(ICoreWebView2Controller *, ICoreWebView2 *webview)>;
  
  public:
@@ -49,7 +47,19 @@ index e14eb5b..a16d561 100644
  
    virtual ~webview2_com_handler() = default;
    webview2_com_handler(const webview2_com_handler &other) = delete;
-@@ -3658,16 +3680,26 @@ public:
+@@ -3644,6 +3666,11 @@
+     webview->add_PermissionRequested(this, &token);
+ 
+     m_cb(controller, webview);
++// ==== pyminiwebview patch begin ====
++// Lifecycle hardening: balance get_CoreWebView2's output reference.
++// Dependency: WebView_init and WebView_close in src/pyminiwebview/_module.cpp.
++    webview->Release();
++// ==== pyminiwebview patch end ====
+     return S_OK;
+   }
+   HRESULT STDMETHODCALLTYPE
+@@ -3658,16 +3685,26 @@
      CoTaskMemFree(message);
      return S_OK;
    }
@@ -78,7 +88,7 @@ index e14eb5b..a16d561 100644
  
    // Set the function that will perform the initiating logic for creating
    // the WebView2 environment.
-@@ -3707,6 +3739,11 @@ private:
+@@ -3707,6 +3744,11 @@
    webview2_com_handler_cb_t m_cb;
    std::atomic<ULONG> m_ref_count{1};
    std::function<HRESULT()> m_attempt_handler;
@@ -90,7 +100,7 @@ index e14eb5b..a16d561 100644
    unsigned int m_max_attempts = 5;
    unsigned int m_attempts = 0;
  };
-@@ -3783,7 +3820,17 @@ private:
+@@ -3783,7 +3825,17 @@
  
  class win32_edge_engine : public engine_base {
  public:
@@ -109,7 +119,7 @@ index e14eb5b..a16d561 100644
      if (!is_webview2_available()) {
        throw exception{WEBVIEW_ERROR_MISSING_DEPENDENCY,
                        "WebView2 is unavailable"};
-@@ -3791,8 +3838,12 @@ public:
+@@ -3791,8 +3843,12 @@
  
      HINSTANCE hInstance = GetModuleHandle(nullptr);
  
@@ -123,7 +133,7 @@ index e14eb5b..a16d561 100644
        enable_dpi_awareness();
  
        HICON icon = (HICON)LoadImage(
-@@ -3965,13 +4016,22 @@ public:
+@@ -3965,13 +4021,22 @@
          return DefWindowProcW(hwnd, msg, wp, lp);
        }
  
@@ -147,7 +157,7 @@ index e14eb5b..a16d561 100644
        case WM_DESTROY:
          w->m_message_window = nullptr;
          SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-@@ -3979,6 +4039,7 @@ public:
+@@ -3979,6 +4044,7 @@
        default:
          return DefWindowProcW(hwnd, msg, wp, lp);
        }
@@ -155,7 +165,7 @@ index e14eb5b..a16d561 100644
        return 0;
      });
      RegisterClassExW(&message_wc);
-@@ -3997,9 +4058,22 @@ public:
+@@ -3997,9 +4063,22 @@
      auto cb =
          std::bind(&win32_edge_engine::on_message, this, std::placeholders::_1);
  
@@ -179,7 +189,7 @@ index e14eb5b..a16d561 100644
    virtual ~win32_edge_engine() {
      if (m_com_handler) {
        m_com_handler->Release();
-@@ -4041,12 +4115,26 @@ public:
+@@ -4041,12 +4120,26 @@
        // behavior across backends.
        deplete_run_loop_event_queue();
      }
@@ -207,7 +217,7 @@ index e14eb5b..a16d561 100644
    }
  
    win32_edge_engine(const win32_edge_engine &other) = delete;
-@@ -4055,14 +4143,11 @@ public:
+@@ -4055,14 +4148,11 @@
    win32_edge_engine &operator=(win32_edge_engine &&other) = delete;
  
  protected:
@@ -227,7 +237,7 @@ index e14eb5b..a16d561 100644
    result<void *> window_impl() override {
      if (m_window) {
        return m_window;
-@@ -4081,14 +4166,32 @@ protected:
+@@ -4081,14 +4171,32 @@
      }
      return error_info{WEBVIEW_ERROR_INVALID_STATE};
    }
@@ -262,7 +272,7 @@ index e14eb5b..a16d561 100644
  
    noresult set_title_impl(const std::string &title) override {
      SetWindowTextW(m_window, widen_string(title).c_str());
-@@ -4183,21 +4286,36 @@ protected:
+@@ -4183,21 +4291,36 @@
    }
  
  private:
@@ -310,7 +320,7 @@ index e14eb5b..a16d561 100644
  
      m_com_handler = new webview2_com_handler(
          wnd, cb,
-@@ -4211,12 +4329,14 @@ private:
+@@ -4211,12 +4334,14 @@
            m_controller = controller;
            m_webview = webview;
            flag.clear();
@@ -327,7 +337,40 @@ index e14eb5b..a16d561 100644
      m_com_handler->try_create_environment();
  
      // Pump the message loop until WebView2 has finished initialization.
-@@ -4331,6 +4451,25 @@ private:
+@@ -4231,6 +4356,11 @@
+       DispatchMessageW(&msg);
+     }
+     if (got_quit_msg) {
++// ==== pyminiwebview patch begin ====
++// Lifecycle hardening: preserve cancellation for an outer message loop.
++// Dependency: WebView_init and WebView_run in src/pyminiwebview/_module.cpp.
++      PostQuitMessage(static_cast<int>(msg.wParam));
++// ==== pyminiwebview patch end ====
+       return error_info{WEBVIEW_ERROR_CANCELED};
+     }
+     if (!m_controller || !m_webview) {
+@@ -4243,10 +4373,20 @@
+     }
+     res = settings->put_AreDevToolsEnabled(debug ? TRUE : FALSE);
+     if (res != S_OK) {
++// ==== pyminiwebview patch begin ====
++// Lifecycle hardening: release settings on configuration failure.
++// Dependency: WebView_init and WebView_close in src/pyminiwebview/_module.cpp.
++      settings->Release();
++// ==== pyminiwebview patch end ====
+       return error_info{WEBVIEW_ERROR_UNSPECIFIED,
+                         "put_AreDevToolsEnabled failed"};
+     }
+     res = settings->put_IsStatusBarEnabled(FALSE);
++// ==== pyminiwebview patch begin ====
++// Lifecycle hardening: balance get_Settings after the final settings call.
++// Dependency: WebView_init and WebView_close in src/pyminiwebview/_module.cpp.
++    settings->Release();
++// ==== pyminiwebview patch end ====
+     if (res != S_OK) {
+       return error_info{WEBVIEW_ERROR_UNSPECIFIED,
+                         "put_IsStatusBarEnabled failed"};
+@@ -4331,6 +4471,25 @@
      }
    }
  
@@ -353,7 +396,7 @@ index e14eb5b..a16d561 100644
    // Blocks while depleting the run loop of events.
    void deplete_run_loop_event_queue() {
      bool done{};
-@@ -4400,6 +4539,29 @@ WEBVIEW_API webview_t webview_create(int debug, void *wnd) {
+@@ -4400,6 +4559,29 @@
    return nullptr;
  }
  
@@ -383,7 +426,7 @@ index e14eb5b..a16d561 100644
  WEBVIEW_API webview_error_t webview_destroy(webview_t w) {
    using namespace webview::detail;
    return api_filter([=]() -> webview::noresult {
-@@ -4409,9 +4571,21 @@ WEBVIEW_API webview_error_t webview_destroy(webview_t w) {
+@@ -4409,9 +4591,21 @@
  }
  
  WEBVIEW_API webview_error_t webview_run(webview_t w) {

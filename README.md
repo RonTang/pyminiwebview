@@ -23,10 +23,10 @@
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
 
-**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.8`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
+**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.9`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
 
 ```bash
-python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.8
+python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.9
 ```
 
 TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可以从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后还可从 Releases 页面获取。未来发布到正式 PyPI 后可使用：
@@ -38,7 +38,7 @@ python -m pip install pyminiwebview
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.8-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.9-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将文件命名为 `pyminiwebview.pyd`，放到应用脚本同目录或 `sys.path` 包含的其他目录，然后执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 wheel 可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
@@ -126,7 +126,7 @@ with pyminiwebview.WebView() as view:
 
 ## Examples
 
-[七个循序渐进的示例](https://github.com/RonTang/pyminiwebview/blob/82136feb2a09c3aa2e1ae05c50336e43a4686a59/examples/README.md)覆盖最小窗口、同步／异步 Bridge、后台任务、Win32 嵌入、无边框应用、托盘与 UTF-8 文件读写。01、02、03、05、07 提供真实启动／退出冒烟参数，其余示例给出人工验收路径。
+[八个循序渐进的示例](examples/README.md)覆盖最小窗口、同步／异步 Bridge、后台任务、Win32 嵌入、无边框应用、托盘、UTF-8 文件读写和透明桌宠。01、02、03、05、07、08 提供真实启动／退出冒烟参数，其余示例给出人工验收路径。
 
 招牌示例运行命令：`python examples/05_frameless_app/app.py`。
 
@@ -153,6 +153,7 @@ WebView(
     app_name="pyminiwebview",
     clipboard_permission="default",
     composition_hosting=False,
+    transparent=False,
 )
 ```
 
@@ -163,6 +164,7 @@ WebView(
 - `user_data_folder`：显式指定 WebView2 用户数据目录。默认使用 `%LOCALAPPDATA%\<app_name>`，不再根据 `python.exe` 推导。
 - `clipboard_permission`：`"default"`（默认，由 WebView2 询问用户）、`"allow"` 或 `"deny"`，控制剪贴板读取权限请求。
 - `composition_hosting`：仅嵌入模式，使用 `ICoreWebView2CompositionController` 和 DirectComposition，由宿主负责命中测试及输入转发；`FramelessWindow` 自动启用并完整管理，普通嵌入场景保持默认 `False`。
+- `transparent`：通过 `ICoreWebView2Controller2` 将 WebView2 默认背景色的 alpha 设为 0，RGB 仍取 `bgcolor`。完整 per-pixel alpha 还需要透明宿主；`FramelessWindow(transparent=True)` 已封装所需的 DirectComposition 和窗口配置。
 
 方法：`close()`、`configure_app_mode(...)`、`notify_parent_position()`、`js_bind(name, fn)`、`js_eval(js)`、`js_init(js)`、`js_return(id, status, result)`、`js_unbind(name)`、`navigate(url)`、`set_html(html)`、`set_title(title)`、`set_size(width, height, hints=0)`、`set_focus()`、`get_native_handle(kind)`、`run(hwnd=0, haccel=0)`、`terminate()`、`dispatch(fn)`。
 
@@ -207,7 +209,7 @@ with FramelessWindow(
     window.run()
 ```
 
-内置 JS 函数为 `__window_minimize()`、`__window_toggle_maximize()`、`__window_close()`、`__window_start_move()`、`__window_start_resize(direction)` 和自动首帧回调 `__window_ready()`。自定义最大化按钮通过 `__window_set_maximize_rect(left, top, right, bottom)` 报告物理客户区像素矩形，宿主在原生命中测试中返回 `HTMAXBUTTON`，Windows 11 因而显示原生 Snap Layouts；按钮仍由 HTML 渲染并接收点击，05 示例用 `ResizeObserver`、`resize` 和 `devicePixelRatio` 同步矩形，不需要 `app-region`。边缘命中区由窗口模式和系统决定，实际缩放均进入 Windows 原生缩放循环，支持八方向拖动；命中区域宽度由系统和 DPI 决定，无需页面添加手柄。自定义手柄仍可调用 `__window_start_resize(direction)`，方向为 `l`、`r`、`t`、`b`、`tl`、`tr`、`bl`、`br`。页面无需调用 ready，库会在 DOM 就绪后的两个动画帧自动显示窗口。可选 `on_maximize_change` 回调用于更新自定义标题栏图标。
+内置 JS 函数为 `__window_minimize()`、`__window_toggle_maximize()`、`__window_close()`、`__window_start_move()`、`__window_start_resize(direction)` 和自动首帧回调 `__window_ready()`。自定义最大化按钮通过 `__window_set_maximize_rect(left, top, right, bottom)` 报告物理客户区像素矩形，宿主在原生命中测试中返回 `HTMAXBUTTON`，Windows 11 因而显示原生 Snap Layouts；按钮仍由 HTML 渲染并接收点击，05 示例用 `ResizeObserver`、`resize` 和 `devicePixelRatio` 同步矩形，不需要 `app-region`。边缘命中区由窗口模式和系统决定，边缘实际缩放进入 Windows 原生缩放循环，支持八方向拖动；命中区域宽度由系统和 DPI 决定，无需页面添加手柄。自定义手柄仍可调用 `__window_start_resize(direction)`，该路径由 Python 捕获鼠标并手动 `SetWindowPos`，不进入系统缩放循环；方向为 `l`、`r`、`t`、`b`、`tl`、`tr`、`bl`、`br`。页面无需调用 ready，库会在 DOM 就绪后的两个动画帧自动显示窗口。可选 `on_maximize_change` 回调用于更新自定义标题栏图标。
 
 `resizable=True` 默认允许边缘拖动缩放和最大化。固定大小窗口显式传入 `resizable=False`：
 
@@ -218,6 +220,31 @@ with FramelessWindow(width=800, height=600, resizable=False) as window:
 ```
 
 固定模式会禁用八方向缩放、`__window_start_resize()`、最大化按钮对应的 `__window_toggle_maximize()` 以及标题栏双击最大化，同时保留标题栏拖动和最小化。自定义标题栏应在此模式下隐藏或禁用最大化按钮。
+
+#### 透明桌宠模式
+
+```python
+from pyminiwebview_win32 import FramelessWindow
+
+with FramelessWindow(
+    width=280,
+    height=300,
+    min_width=280,
+    min_height=300,
+    resizable=False,
+    transparent=True,
+    topmost=True,
+) as window:
+    window.view.set_html("""
+      <style>html, body { background: transparent; }</style>
+      <img src="pet.png" onmousedown="__window_start_move()">
+    """)
+    window.run()
+```
+
+`transparent=True` 是独立于 `frame` 预设的模式：使用 DirectComposition 传递每像素 alpha，不创建宿主背景画刷，不应用 DWM 圆角、边框或阴影，并禁用原生缩放和最大化。宿主使用 `WS_POPUP | WS_EX_TOOLWINDOW`，不出现在任务栏；显示时不抢前台焦点。`topmost=True` 通过 `SetWindowPos(HWND_TOPMOST)` 置顶，也可用于非透明无边框窗口。这里不需要 `WS_EX_LAYERED`；`SetLayeredWindowAttributes(..., LWA_ALPHA)` 只设置整窗不透明度，并不提供 per-pixel alpha。
+
+页面的 `html`、`body` 必须保持透明。拖动可复用 `__window_start_move()`。`window.set_click_through(on)` 或独立助手 `set_click_through(hwnd, on)` 切换 `WS_EX_TRANSPARENT` 并返回新状态；开启时会同时补齐鼠标穿透所需的 `WS_EX_LAYERED`，关闭时保留分层状态以避免破坏既有窗口配置。开启后页面无法接收鼠标，应保留托盘菜单或全局快捷键用于关闭穿透。完整示例为 `examples/08_desk_pet.py`，包含 CSS 动画、拖动和托盘“显示 / 隐藏 / 穿透 / 退出”。
 
 #### 窗口框四种模式
 
@@ -289,14 +316,16 @@ with pyminiwebview.WebView() as view:
 ```python
 view.configure_app_mode(
     disable_browser_accelerators=True,
+    disable_default_context_menus=True,
     disable_nc_region_support=True,
     redirect_new_window_to_system_browser=True,
 )
 ```
 
-三个参数默认均为 `True`：
+四个参数默认均为 `True`：
 
 - `disable_browser_accelerators`：通过 `ICoreWebView2Settings3` 禁用浏览器加速键，防止 F5/Ctrl+R 刷新应用界面和 Ctrl+F 打开查找栏；应用自己的加速键通过 `run(hwnd, haccel)` 的 `HACCEL` 处理。接口查询或设置失败会抛出带 HRESULT 的 `RuntimeError`。
+- `disable_default_context_menus`：通过 `ICoreWebView2Settings` 禁用包含“刷新”“打印”等命令的 WebView2 默认右键菜单；`FramelessWindow` 自动应用。设为 `False` 只表示本次不修改该设置，不会重新启用已禁用的菜单。
 - `disable_nc_region_support`：通过 `ICoreWebView2Settings9` 显式关闭非客户区支持，避免 CSS `app-region` 生成的进程内子窗吞掉宿主 `WM_NCHITTEST` 边缘命中。运行时过旧而返回 `E_NOINTERFACE` 时表示该功能本来就不存在，会安全跳过；其他失败抛出 `RuntimeError`。
 - `redirect_new_window_to_system_browser`：用 `NewWindowRequested` 将 `window.open` 等请求转到系统默认浏览器，并标记请求已处理；仅允许 `http`/`https`，其他协议直接拦截，`ShellExecuteW` 失败会由 COM 回调返回错误；重复配置不会重复注册事件。
 
@@ -356,6 +385,7 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 
 - 1000 次绑定/解绑的回调引用计数稳定，以及导航、HTML 加载和销毁。
 - 独立窗口构造期隐藏、首帧显示和请求尺寸稳定；无边框助手的真实宿主、内置桥接、首帧和清理。
+- 初始化取消在子进程中保留 `WM_QUIT` 退出码；8 轮真实 Composition 创建、用户脚本注入与关闭压力测试。
 - 实际 JS→Python 回调与 `js_return`。
 - `run()` 期间 `threading.Timer` 能执行，且 `dispatch` 在 UI 线程运行。
 - 通过 `CreateWindowExW` 创建宿主窗口并验证 autosize。
@@ -366,7 +396,7 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - 文件对话框 flags、路径缓冲区、取消/错误语义，以及真实托盘创建、消息回调和清理。
 - Bridge 的 JSON 成功／错误路径、call_js 参数与函数名校验，以及真实 WebView2 双向调用和引用回收。
 - AsyncBridge 的并发、异常、取消、关闭超时、启动失败回收、executor 关闭边界和引用回收；1000 次并发调用、反复创建销毁，以及真实 WebView2 的 300 次混合结果压力测试。
-- 01、02、03、05、07 通过子进程真实启动、执行页面交互并正常清理退出。
+- 01、02、03、05、07、08 通过子进程真实启动、执行页面交互并正常清理退出；透明桌宠额外检查 WebView2 背景 alpha、工具窗口、置顶和点击穿透样式。
 
 无边框示例的 PNG/GIF 来自真实应用窗口。需要重录时先原地构建扩展，再运行 `python tools/record_frameless_demo.py`；该开发脚本使用 Pillow、PyAutoGUI 和 pywin32，它们不是库的运行时依赖。
 
@@ -384,6 +414,15 @@ GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.
 Win32 助手另需人工确认：打开对话框能选择已有文件、取消返回 `None`；保存对话框允许新文件并提示覆盖；托盘左右键触发回调，`remove()` 后无图标残留。
 
 ## CHANGELOG
+
+### 0.1.9
+
+- Composition 异步创建与用户脚本回调改用共享、可取消的堆上状态，不再捕获已退栈的局部变量或引擎指针；修复初始化取消时的潜在 UAF，并透传脚本同步／异步创建失败。
+- 配平 vendored Win32 引擎的 Core 与 Settings COM 引用，Composition 初始化局部接口改用 WRL RAII；嵌套初始化收到 `WM_QUIT` 后保留退出码供外层消息循环处理。
+- `FramelessWindow` 在销毁宿主前关闭 Bridge，避免 WebView2 Core 已失效后解绑脚本；新增初始化取消子进程测试和 8 轮 Composition 创建、脚本、关闭压力测试。
+- `configure_app_mode()` 默认禁用 WebView2 自带的“刷新 / 打印”等右键菜单，修复透明桌宠和所有 `FramelessWindow` 的浏览器菜单残留；可用 `disable_default_context_menus=False` 跳过该策略。
+- `WebView` 新增 `transparent` 参数，支持 WebView2 零 alpha 默认背景；`FramelessWindow` 新增独立透明桌宠模式和 `topmost`，绕开 DWM 框架并使用不显示任务栏按钮的工具窗口。
+- 新增 `set_click_through` 助手和同名 `FramelessWindow` 方法；新增 08 透明桌宠示例，演示 CSS 动画、原生拖动和托盘控制。
 
 ### 0.1.8
 
