@@ -23,22 +23,24 @@
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
 
-**正式 PyPI 尚未发布，`python -m pip install pyminiwebview` 目前仍不可用。** 当前版本为 `0.1.9`，发布产物已在本机完成隔离安装测试；上传 TestPyPI 后，可用以下命令验证测试发布：
-
-```bash
-python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.9
-```
-
-TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可以从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后还可从 Releases 页面获取。未来发布到正式 PyPI 后可使用：
+当前版本为 `0.1.10`，发布产物已在本机完成隔离安装测试。正式 PyPI 已发布，可安装最新可用版本：
 
 ```bash
 python -m pip install pyminiwebview
 ```
 
+如需验证 TestPyPI 发布，可使用：
+
+```bash
+python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.10
+```
+
+TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可以从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后还可从 Releases 页面获取。
+
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.9-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.10-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将文件命名为 `pyminiwebview.pyd`，放到应用脚本同目录或 `sys.path` 包含的其他目录，然后执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 wheel 可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
@@ -316,13 +318,13 @@ with pyminiwebview.WebView() as view:
 ```python
 view.configure_app_mode(
     disable_browser_accelerators=True,
-    disable_default_context_menus=True,
     disable_nc_region_support=True,
     redirect_new_window_to_system_browser=True,
+    disable_default_context_menus=True,
 )
 ```
 
-四个参数默认均为 `True`：
+四个参数默认均为 `True`。前三个保留 0.1.8 的位置参数顺序；`disable_default_context_menus` 为仅关键字参数，不能作为第四个位置参数传入：
 
 - `disable_browser_accelerators`：通过 `ICoreWebView2Settings3` 禁用浏览器加速键，防止 F5/Ctrl+R 刷新应用界面和 Ctrl+F 打开查找栏；应用自己的加速键通过 `run(hwnd, haccel)` 的 `HACCEL` 处理。接口查询或设置失败会抛出带 HRESULT 的 `RuntimeError`。
 - `disable_default_context_menus`：通过 `ICoreWebView2Settings` 禁用包含“刷新”“打印”等命令的 WebView2 默认右键菜单；`FramelessWindow` 自动应用。设为 `False` 只表示本次不修改该设置，不会重新启用已禁用的菜单。
@@ -414,6 +416,11 @@ GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.
 Win32 助手另需人工确认：打开对话框能选择已有文件、取消返回 `None`；保存对话框允许新文件并提示覆盖；托盘左右键触发回调，`remove()` 后无图标残留。
 
 ## CHANGELOG
+
+### 0.1.10
+
+- 恢复 `configure_app_mode()` 在 0.1.8 及之前版本的三个位置参数顺序，避免旧代码 `configure_app_mode(True, False)` 被误解释为右键菜单开关。0.1.9 将 `disable_default_context_menus` 插入第二位，造成了短暂的位置参数不兼容；0.1.10 将该新开关改为仅关键字参数，0.1.9 的四个位置参数调用应改为关键字调用。
+- 修正 CPython 3.9 测试辅助结构对 WebView2 alpha 通道的有符号读取，CI 继续使用明确的无符号 `ctypes.c_ubyte`；不影响库运行时行为。
 
 ### 0.1.9
 

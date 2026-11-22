@@ -1091,19 +1091,19 @@ static PyObject *WebView_exit(WebViewObject *self, PyObject *args) {
 static PyObject *WebView_configure_app_mode(WebViewObject *self, PyObject *args,
                                             PyObject *kwds) {
   int disable_browser_accelerators = 1;
-  int disable_default_context_menus = 1;
   int disable_nc_region_support = 1;
   int redirect_new_window_to_system_browser = 1;
+  int disable_default_context_menus = 1;
   static char *keywords[] = {
       (char *)"disable_browser_accelerators",
-      (char *)"disable_default_context_menus",
       (char *)"disable_nc_region_support",
       (char *)"redirect_new_window_to_system_browser",
+      (char *)"disable_default_context_menus",
       nullptr};
   if (!PyArg_ParseTupleAndKeywords(
-          args, kwds, "|pppp:configure_app_mode", keywords,
-          &disable_browser_accelerators, &disable_default_context_menus,
-          &disable_nc_region_support, &redirect_new_window_to_system_browser)) {
+          args, kwds, "|ppp$p:configure_app_mode", keywords,
+          &disable_browser_accelerators, &disable_nc_region_support,
+          &redirect_new_window_to_system_browser, &disable_default_context_menus)) {
     return nullptr;
   }
   if (require_webview(self) < 0 ||
@@ -1697,7 +1697,7 @@ PyMODINIT_FUNC PyInit_pyminiwebview(void) {
                    WEBVIEW_NATIVE_HANDLE_KIND_UI_WIDGET) < 0 ||
       add_constant(module, "NATIVE_HANDLE_KIND_BROWSER_CONTROLLER",
                    WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER) < 0 ||
-      PyModule_AddStringConstant(module, "__version__", "0.1.9") < 0) {
+      PyModule_AddStringConstant(module, "__version__", "0.1.10") < 0) {
     Py_DECREF(module);
     return nullptr;
   }

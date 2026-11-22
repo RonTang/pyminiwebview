@@ -429,6 +429,13 @@ def test_configure_app_mode_smoke(webview):
     assert default_context_menus_enabled(webview) is False
 
 
+def test_configure_app_mode_preserves_legacy_positional_arguments(webview):
+    webview.configure_app_mode(True, False, False)
+    assert default_context_menus_enabled(webview) is False
+    with pytest.raises(TypeError):
+        webview.configure_app_mode(True, True, True, True)
+
+
 def test_notify_parent_position(webview):
     webview.notify_parent_position()
 

@@ -5,7 +5,7 @@
 ## 前提
 
 - 64 位 Windows、CPython 3.9+、Microsoft Edge WebView2 Runtime。
-- 先安装项目 wheel。项目尚未发布 PyPI，请从 GitHub Actions Artifacts 获取 wheel，或按根 README 的说明本地构建。
+- 先安装项目 wheel。可从 PyPI 安装已发布版本，或从 GitHub Actions Artifacts 获取 wheel、按根 README 的说明本地构建。
 - 在仓库根目录执行下列命令；`05` 的页面资源通过 `__file__` 定位，不依赖当前工作目录。
 
 ## 学习顺序
