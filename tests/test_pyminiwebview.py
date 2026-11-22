@@ -19,8 +19,8 @@ import pyminiwebview
 
 class COREWEBVIEW2_COLOR(ctypes.Structure):
     _fields_ = [
-        ("A", wintypes.BYTE), ("R", wintypes.BYTE),
-        ("G", wintypes.BYTE), ("B", wintypes.BYTE),
+        ("A", ctypes.c_ubyte), ("R", ctypes.c_ubyte),
+        ("G", ctypes.c_ubyte), ("B", ctypes.c_ubyte),
     ]
 
 
