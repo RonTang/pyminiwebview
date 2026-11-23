@@ -136,6 +136,7 @@ _WS_EX_TOOLWINDOW = 0x00000080
 _GWL_EXSTYLE = -20
 _HWND_TOPMOST = ctypes.c_void_p(-1).value
 _ERROR_ACCESS_DENIED = 5
+_DEFAULT_DPI = 96
 _NON_RUDE_PROPERTY = "NonRudeHWND"
 _LONG_PTR = ctypes.c_ssize_t
 _WNDPROC = ctypes.WINFUNCTYPE(
@@ -257,6 +258,8 @@ _user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_MONITORINFO
 _user32.GetMonitorInfoW.restype = wintypes.BOOL
 _user32.GetDpiForWindow.argtypes = [wintypes.HWND]
 _user32.GetDpiForWindow.restype = wintypes.UINT
+_user32.GetDpiForSystem.argtypes = []
+_user32.GetDpiForSystem.restype = wintypes.UINT
 _user32.GetSystemMetrics.argtypes = [ctypes.c_int]
 _user32.GetSystemMetrics.restype = ctypes.c_int
 _user32.GetDoubleClickTime.restype = wintypes.UINT
@@ -328,6 +331,14 @@ def _is_per_monitor_v2():
         ))
     except (AttributeError, OSError):
         return False
+
+
+def _scale_for_dpi(value, dpi):
+    return (value * dpi + _DEFAULT_DPI // 2) // _DEFAULT_DPI
+
+
+def _window_dpi(hwnd):
+    return _user32.GetDpiForWindow(hwnd) or _DEFAULT_DPI
 
 
 def _enable_dpi_awareness():
@@ -833,16 +844,20 @@ class FramelessWindow:
             _SPI_GETWORKAREA, 0, ctypes.byref(work_area), 0
         ):
             raise ctypes.WinError(ctypes.get_last_error())
+        style = self._window_style()
+        ex_style = self._window_ex_style()
+        dpi = _user32.GetDpiForSystem() or _DEFAULT_DPI
+        initial_width = _scale_for_dpi(self._width, dpi)
+        initial_height = _scale_for_dpi(self._height, dpi)
         x = work_area.left + (
-            work_area.right - work_area.left - self._width
+            work_area.right - work_area.left - initial_width
         ) // 2
         y = work_area.top + (
-            work_area.bottom - work_area.top - self._height
+            work_area.bottom - work_area.top - initial_height
         ) // 2
-        style = self._window_style()
         self.hwnd = _user32.CreateWindowExW(
-            self._window_ex_style(), self._class_name, self._title, style,
-            x, y, self._width, self._height,
+            ex_style, self._class_name, self._title, style,
+            x, y, initial_width, initial_height,
             None, None, self._hinstance, None,
         )
         if not self.hwnd:
@@ -878,9 +893,11 @@ class FramelessWindow:
         )
         if self._resizable and not self._transparent:
             self._create_native_resize()
+        dpi = _window_dpi(self.hwnd)
         if not _user32.SetWindowPos(
             self.hwnd, None, 0, 0,
-            self._width, self._height,
+            _scale_for_dpi(self._width, dpi),
+            _scale_for_dpi(self._height, dpi),
             _SWP_NOMOVE | _SWP_NOZORDER | _SWP_NOACTIVATE | _SWP_FRAMECHANGED,
         ):
             raise ctypes.WinError(ctypes.get_last_error())
@@ -1026,15 +1043,18 @@ class FramelessWindow:
         dx = point.x - self._resize_origin[0]
         dy = point.y - self._resize_origin[1]
         left, top, right, bottom = self._resize_bounds
+        dpi = _window_dpi(self.hwnd)
+        min_width = _scale_for_dpi(self._min_width, dpi)
+        min_height = _scale_for_dpi(self._min_height, dpi)
         direction = self._resize_direction
         if "l" in direction:
-            left = min(left + dx, right - self._min_width)
+            left = min(left + dx, right - min_width)
         if "r" in direction:
-            right = max(right + dx, left + self._min_width)
+            right = max(right + dx, left + min_width)
         if "t" in direction:
-            top = min(top + dy, bottom - self._min_height)
+            top = min(top + dy, bottom - min_height)
         if "b" in direction:
-            bottom = max(bottom + dy, top + self._min_height)
+            bottom = max(bottom + dy, top + min_height)
         _user32.SetWindowPos(
             self.hwnd, None, left, top, right - left, bottom - top,
             _SWP_NOZORDER | _SWP_NOACTIVATE,
@@ -1089,10 +1109,15 @@ class FramelessWindow:
 
     def _handle_get_min_max_info(self, hwnd, lparam):
         info = ctypes.cast(lparam, ctypes.POINTER(_MINMAXINFO)).contents
-        info.ptMinTrackSize = _POINT(self._min_width, self._min_height)
+        dpi = _window_dpi(hwnd)
+        min_width = _scale_for_dpi(self._min_width, dpi)
+        min_height = _scale_for_dpi(self._min_height, dpi)
+        info.ptMinTrackSize = _POINT(min_width, min_height)
         if not self._resizable:
-            info.ptMinTrackSize = _POINT(self._width, self._height)
-            info.ptMaxTrackSize = _POINT(self._width, self._height)
+            fixed_width = _scale_for_dpi(self._width, dpi)
+            fixed_height = _scale_for_dpi(self._height, dpi)
+            info.ptMinTrackSize = _POINT(fixed_width, fixed_height)
+            info.ptMaxTrackSize = _POINT(fixed_width, fixed_height)
         monitor = _user32.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
         monitor_info = self._get_monitor_info(monitor)
         if monitor_info is not None:

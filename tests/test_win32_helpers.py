@@ -140,6 +140,16 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
             "__window_ready",
         } <= set(window.bridge._names)
         assert window._frame == "normal"
+        initial_rect = wintypes.RECT()
+        assert user32.GetWindowRect(hwnd, ctypes.byref(initial_rect))
+        initial_dpi = frameless._window_dpi(hwnd)
+        assert (
+            initial_rect.right - initial_rect.left,
+            initial_rect.bottom - initial_rect.top,
+        ) == (
+            frameless._scale_for_dpi(760, initial_dpi),
+            frameless._scale_for_dpi(540, initial_dpi),
+        )
         assert window._overlay_wndproc(
             window._resize_overlays["t"],
             frameless._WM_ERASEBKGND, 0, 0
@@ -162,7 +172,11 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
         assert params.rgrc[0].right == 760 - padding
         assert params.rgrc[0].bottom == 540 - padding
 
-        suggested = wintypes.RECT(120, 120, 880, 660)
+        suggested_width = initial_rect.right - initial_rect.left
+        suggested_height = initial_rect.bottom - initial_rect.top
+        suggested = wintypes.RECT(
+            120, 120, 120 + suggested_width, 120 + suggested_height
+        )
         assert window._wndproc(
             hwnd, frameless._WM_DPICHANGED, (192 << 16) | 96,
             ctypes.addressof(suggested),
@@ -170,7 +184,7 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
         actual = wintypes.RECT()
         assert user32.GetWindowRect(hwnd, ctypes.byref(actual))
         assert (actual.left, actual.top, actual.right, actual.bottom) == (
-            120, 120, 880, 660
+            120, 120, 120 + suggested_width, 120 + suggested_height
         )
 
         window.on_maximize_change = None
@@ -355,6 +369,59 @@ def test_fixed_frameless_window_disables_resizing_and_maximize():
     ) == 0
     assert (info.ptMinTrackSize.x, info.ptMinTrackSize.y) == (760, 540)
     assert (info.ptMaxTrackSize.x, info.ptMaxTrackSize.y) == (760, 540)
+
+
+@pytest.mark.parametrize(
+    "value, dpi, expected",
+    [(320, 96, 320), (320, 120, 400), (320, 144, 480), (320, 192, 640),
+     (1, 144, 2), (5, 120, 6)],
+)
+def test_frameless_dimensions_are_scaled_from_logical_pixels(
+        value, dpi, expected):
+    assert frameless._scale_for_dpi(value, dpi) == expected
+
+
+def test_frameless_fixed_minmax_tracks_current_dpi(monkeypatch):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._resizable = False
+    window._width = 760
+    window._height = 540
+    window._min_width = 640
+    window._min_height = 480
+    monkeypatch.setattr(frameless._user32, "GetDpiForWindow", lambda _hwnd: 144)
+    monkeypatch.setattr(frameless._user32, "MonitorFromWindow", lambda *_args: None)
+
+    info = frameless._MINMAXINFO()
+    assert window._wndproc(
+        123, frameless._WM_GETMINMAXINFO, 0, ctypes.addressof(info)
+    ) == 0
+    assert (info.ptMinTrackSize.x, info.ptMinTrackSize.y) == (1140, 810)
+    assert (info.ptMaxTrackSize.x, info.ptMaxTrackSize.y) == (1140, 810)
+
+
+def test_frameless_manual_resize_enforces_scaled_minimum(monkeypatch):
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    window._min_width = 200
+    window._min_height = 150
+    window._resize_direction = "tl"
+    window._resize_origin = (150, 150)
+    window._resize_bounds = (100, 100, 600, 500)
+    calls = []
+    monkeypatch.setattr(frameless._user32, "GetDpiForWindow", lambda _hwnd: 192)
+    monkeypatch.setattr(frameless._user32, "GetCursorPos", lambda pointer: (
+        setattr(ctypes.cast(pointer, ctypes.POINTER(frameless._POINT)).contents,
+                "x", 1000),
+        setattr(ctypes.cast(pointer, ctypes.POINTER(frameless._POINT)).contents,
+                "y", 1000),
+    ) or True)
+    monkeypatch.setattr(
+        frameless._user32, "SetWindowPos",
+        lambda *args: calls.append(args) or True,
+    )
+
+    window._resize()
+    assert calls[0][2:6] == (200, 200, 400, 300)
 
 
 def test_frameless_maximize_uses_monitor_relative_position(monkeypatch):
@@ -1362,7 +1429,7 @@ def test_tray_icon_rejects_oversized_tooltip_before_creating_window(monkeypatch)
         TrayIcon(tooltip="😀" * 64)
 
 
-def test_tray_icon_remove_logs_destroy_failure_and_cleans_up(
+def test_tray_icon_remove_logs_destroy_failure_and_allows_retry(
         monkeypatch, caplog):
     icon = TrayIcon.__new__(TrayIcon)
     icon._hwnd = 123
@@ -1370,8 +1437,12 @@ def test_tray_icon_remove_logs_destroy_failure_and_cleans_up(
     icon._class_registered = True
     icon._class_name = "PyMiniWebViewTray_Test"
     icon._hinstance = 456
+    destroy_calls = []
     unregister_calls = []
-    monkeypatch.setattr(tray._user32, "DestroyWindow", lambda _hwnd: False)
+    monkeypatch.setattr(
+        tray._user32, "DestroyWindow",
+        lambda hwnd: destroy_calls.append(hwnd) and True,
+    )
     monkeypatch.setattr(tray.ctypes, "get_last_error", lambda: 5)
     monkeypatch.setattr(
         tray._user32, "UnregisterClassW",
@@ -1383,6 +1454,72 @@ def test_tray_icon_remove_logs_destroy_failure_and_cleans_up(
         icon.remove()
 
     assert "Win32 error 5" in caplog.text
+    assert destroy_calls == [123, 123]
+    assert icon._hwnd == 123
+    assert icon._class_registered
+    assert unregister_calls == []
+
+    monkeypatch.setattr(
+        tray._user32, "DestroyWindow", lambda hwnd: destroy_calls.append(hwnd) or True
+    )
+    icon.remove()
+    icon.remove()
+    assert destroy_calls == [123, 123, 123]
     assert icon._hwnd is None
     assert not icon._class_registered
     assert unregister_calls == [("PyMiniWebViewTray_Test", 456)]
+
+
+def test_tray_icon_rejects_invalid_arguments_before_native_setup(monkeypatch):
+    monkeypatch.setattr(
+        tray._kernel32, "GetModuleHandleW",
+        lambda *_args: pytest.fail("must not create native resources"),
+    )
+    with pytest.raises(TypeError, match="tooltip"):
+        TrayIcon(tooltip=1)
+    with pytest.raises(ValueError, match="NUL"):
+        TrayIcon(tooltip="hidden\x00text")
+    for keyword in ("on_click", "on_left_click", "on_right_click"):
+        with pytest.raises(TypeError, match=keyword):
+            TrayIcon(**{keyword: 1})
+
+
+def test_tray_icon_add_failure_without_win32_error_is_diagnostic(monkeypatch):
+    unregister_calls = []
+    monkeypatch.setattr(tray._user32, "RegisterClassW", lambda _pointer: 1)
+    monkeypatch.setattr(tray._user32, "CreateWindowExW", lambda *_args: 123)
+    monkeypatch.setattr(tray._user32, "LoadIconW", lambda *_args: 456)
+    monkeypatch.setattr(tray._shell32, "Shell_NotifyIconW", lambda *_args: False)
+    monkeypatch.setattr(tray._user32, "DestroyWindow", lambda _hwnd: True)
+    monkeypatch.setattr(
+        tray._user32, "UnregisterClassW",
+        lambda *args: unregister_calls.append(args) or True,
+    )
+    monkeypatch.setattr(tray.ctypes, "get_last_error", lambda: 0)
+
+    with pytest.raises(OSError, match="NIM_ADD"):
+        TrayIcon()
+    assert len(unregister_calls) == 1
+
+
+def test_tray_icon_unregister_failure_can_be_retried(monkeypatch, caplog):
+    icon = TrayIcon.__new__(TrayIcon)
+    icon._hwnd = None
+    icon._icon_added = False
+    icon._class_registered = True
+    icon._class_name = "PyMiniWebViewTray_Test"
+    icon._hinstance = 456
+    calls = []
+    monkeypatch.setattr(
+        tray._user32, "UnregisterClassW",
+        lambda *args: calls.append(args) or len(calls) > 1,
+    )
+
+    with caplog.at_level("WARNING", logger="pyminiwebview_win32.tray"):
+        icon.remove()
+        assert icon._class_registered
+        icon.remove()
+
+    assert not icon._class_registered
+    assert len(calls) == 2
+    assert "class unregistration failed" in caplog.text

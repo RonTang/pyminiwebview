@@ -1,5 +1,6 @@
 import ctypes
 import gc
+import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -113,6 +114,10 @@ def webview(tmp_path):
     gc.collect()
 
 
+def test_module_version_matches_distribution_metadata():
+    assert pyminiwebview.__version__ == importlib.metadata.version("pyminiwebview")
+
+
 def test_standalone_reveals_first_frame_at_requested_size(tmp_path):
     instance = pyminiwebview.WebView(
         width=777,
@@ -177,30 +182,103 @@ def test_background_color_preserves_rgb_and_sets_alpha(
         instance.close()
 
 
-def test_initialization_reposts_quit_for_outer_message_loop(tmp_path):
+@pytest.mark.parametrize("composition", [False, True])
+def test_initialization_reposts_quit_for_outer_message_loop(
+        tmp_path, composition):
     script = r"""
 import ctypes
 import sys
 from ctypes import wintypes
 import pyminiwebview
 user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 user32.PostQuitMessage.argtypes = [ctypes.c_int]
 user32.PeekMessageW.argtypes = [
     ctypes.POINTER(wintypes.MSG), wintypes.HWND,
     wintypes.UINT, wintypes.UINT, wintypes.UINT,
 ]
 user32.PeekMessageW.restype = wintypes.BOOL
-user32.PostQuitMessage(37)
+composition = sys.argv[2] == "composition"
+host = None
+window_class = None
+window_proc = None
+class_name = "pyminiwebview-cancel-init"
+if composition:
+    LONG_PTR = ctypes.c_ssize_t
+    WNDPROC = ctypes.WINFUNCTYPE(
+        LONG_PTR, wintypes.HWND, wintypes.UINT,
+        ctypes.c_size_t, LONG_PTR,
+    )
+
+    class WNDCLASSW(ctypes.Structure):
+        _fields_ = [
+            ("style", wintypes.UINT), ("lpfnWndProc", WNDPROC),
+            ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+            ("hInstance", wintypes.HINSTANCE), ("hIcon", wintypes.HICON),
+            ("hCursor", wintypes.HANDLE), ("hbrBackground", wintypes.HBRUSH),
+            ("lpszMenuName", wintypes.LPCWSTR),
+            ("lpszClassName", wintypes.LPCWSTR),
+        ]
+
+    user32.DefWindowProcW.argtypes = [
+        wintypes.HWND, wintypes.UINT, ctypes.c_size_t, LONG_PTR,
+    ]
+    user32.DefWindowProcW.restype = LONG_PTR
+    user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
+    user32.RegisterClassW.restype = wintypes.ATOM
+    user32.CreateWindowExW.argtypes = [
+        wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+    ]
+    user32.CreateWindowExW.restype = wintypes.HWND
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.DestroyWindow.restype = wintypes.BOOL
+    user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+    user32.UnregisterClassW.restype = wintypes.BOOL
+    kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
+    instance_handle = kernel32.GetModuleHandleW(None)
+
+    @WNDPROC
+    def window_proc(hwnd, message, wparam, lparam):
+        return user32.DefWindowProcW(hwnd, message, wparam, lparam)
+
+    window_class = WNDCLASSW()
+    window_class.lpfnWndProc = window_proc
+    window_class.hInstance = instance_handle
+    window_class.lpszClassName = class_name
+    assert user32.RegisterClassW(ctypes.byref(window_class))
+    host = user32.CreateWindowExW(
+        0, class_name, class_name, 0x00CF0000,
+        0, 0, 500, 350, None, None, instance_handle, None,
+    )
+    assert host
+
 try:
-    pyminiwebview.WebView(user_data_folder=sys.argv[1])
-except RuntimeError:
-    pass
-else:
-    raise AssertionError("WM_QUIT must cancel WebView initialization")
-message = wintypes.MSG()
-assert user32.PeekMessageW(ctypes.byref(message), None, 0x0012, 0x0012, 1)
-assert message.message == 0x0012
-assert message.wParam == 37
+    for index in range(6):
+        quit_code = 37 + index
+        user32.PostQuitMessage(quit_code)
+        try:
+            pyminiwebview.WebView(
+                window=host or 0,
+                composition_hosting=composition,
+                user_data_folder=f"{sys.argv[1]}-{index}",
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("WM_QUIT must cancel WebView initialization")
+        message = wintypes.MSG()
+        assert user32.PeekMessageW(
+            ctypes.byref(message), None, 0x0012, 0x0012, 1
+        ), (index, quit_code)
+        assert message.message == 0x0012
+        assert message.wParam == quit_code, (index, message.wParam, quit_code)
+finally:
+    if host:
+        user32.DestroyWindow(host)
+        user32.UnregisterClassW(class_name, kernel32.GetModuleHandleW(None))
 print("quit preserved")
 """
     environment = os.environ.copy()
@@ -209,13 +287,16 @@ print("quit preserved")
         filter(None, [source_dir, environment.get("PYTHONPATH")])
     )
     result = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path / "cancelled-data")],
+        [
+            sys.executable, "-c", script, str(tmp_path / "cancelled-data"),
+            "composition" if composition else "standard",
+        ],
         env=environment,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=20,
+        timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "quit preserved" in result.stdout
@@ -325,6 +406,41 @@ def test_close_is_idempotent_and_context_manager_closes(tmp_path):
         with pytest.raises(RuntimeError):
             instance.set_html("closed")
     assert not window_exists(hwnd)
+
+
+def test_repeated_initialization_preserves_live_instance_and_ui_thread(
+        webview, tmp_path):
+    webview.set_html("<p>original</p>")
+    with pytest.raises(RuntimeError, match="already initialized"):
+        webview.__init__(user_data_folder=str(tmp_path / "duplicate-main"))
+    errors = []
+
+    def reinitialize_from_worker():
+        try:
+            webview.__init__(user_data_folder=str(tmp_path / "duplicate-worker"))
+        except RuntimeError as error:
+            errors.append(str(error))
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=reinitialize_from_worker)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert len(errors) == 1 and "already initialized" in errors[0]
+    webview.set_html("<p>still usable</p>")
+    webview.close()
+
+
+def test_failed_argument_validation_can_be_followed_by_valid_init(tmp_path):
+    instance = pyminiwebview.WebView.__new__(pyminiwebview.WebView)
+    with pytest.raises(ValueError, match="positive"):
+        instance.__init__(width=0)
+    instance.__init__(user_data_folder=str(tmp_path / "webview-data"))
+    try:
+        instance.set_html("<p>initialized after validation error</p>")
+    finally:
+        instance.close()
 
 
 def test_binding_cycle_is_collected_and_destroys_native_window(tmp_path):

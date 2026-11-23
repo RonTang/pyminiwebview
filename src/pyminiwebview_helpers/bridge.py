@@ -48,14 +48,16 @@ class Bridge:
 
         Must be called before ``view.close()``. The method is idempotent.
         """
-        if self._view is None:
+        view = self._view
+        if view is None:
             return
-        for name in list(self._names):
+        names = list(self._names)
+        self._detach()
+        for name in names:
             try:
-                self._view.js_unbind(name)
+                view.js_unbind(name)
             except KeyError:
                 pass
-        self._detach()
 
     def _detach(self):
         self._names.clear()
@@ -121,6 +123,10 @@ class Bridge:
         bridge_ref = weakref.ref(self)
 
         def callback(request_id, request_json):
+            bridge = bridge_ref()
+            if bridge is not None and bridge._view is None:
+                return
+
             def respond(request_id, status, response):
                 bridge = bridge_ref()
                 if bridge is not None and bridge._view is None:

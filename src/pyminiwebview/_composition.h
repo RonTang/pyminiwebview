@@ -463,8 +463,10 @@ protected:
 private:
   static void require(HRESULT result) {
     if (FAILED(result)) {
-      throw webview::exception{WEBVIEW_ERROR_UNSPECIFIED,
-                               "Composition WebView2 initialization failed"};
+      throw webview::exception{
+          WEBVIEW_ERROR_UNSPECIFIED,
+          "Composition WebView2 initialization failed (HRESULT " +
+              std::to_string(static_cast<long>(result)) + ")"};
     }
   }
 
@@ -473,25 +475,57 @@ private:
     state.cancelled = true;
   }
 
-  static void pump_until(AsyncOperationState &state) {
-    for (;;) {
-      {
-        std::lock_guard<std::mutex> lock(state.mutex);
-        if (state.done) {
-          return;
+  void pump_until(AsyncOperationState &state) {
+    constexpr ULONGLONG initialization_timeout_ms = 30000;
+    const ULONGLONG deadline = GetTickCount64() + initialization_timeout_ms;
+    const UINT_PTR wake_timer = SetTimer(nullptr, 0, 250, nullptr);
+    if (!wake_timer) {
+      throw webview::exception{
+          WEBVIEW_ERROR_UNSPECIFIED,
+          "Failed to create Composition initialization timeout timer"};
+    }
+    try {
+      for (;;) {
+        {
+          std::lock_guard<std::mutex> lock(state.mutex);
+          if (state.done) {
+            KillTimer(nullptr, wake_timer);
+            return;
+          }
         }
-      }
-      MSG message;
-      BOOL result = GetMessageW(&message, nullptr, 0, 0);
-      if (result <= 0) {
-        if (result == 0) {
-          PostQuitMessage(static_cast<int>(message.wParam));
+        MSG message;
+        const BOOL result = GetMessageW(&message, nullptr, 0, 0);
+        if (result <= 0) {
+          KillTimer(nullptr, wake_timer);
+          if (result == 0) {
+            webview_note_initialization_quit(
+                static_cast<int>(message.wParam));
+            PostQuitMessage(static_cast<int>(message.wParam));
+            throw webview::exception{
+                WEBVIEW_ERROR_CANCELED,
+                "Composition WebView2 initialization canceled"};
+          }
+          throw webview::exception{
+              WEBVIEW_ERROR_UNSPECIFIED,
+              "Composition WebView2 initialization GetMessageW failed"};
         }
-        throw webview::exception{WEBVIEW_ERROR_CANCELED,
-                                 "Composition WebView2 initialization canceled"};
+        if (message.message == WM_TIMER && message.hwnd == nullptr &&
+            message.wParam == wake_timer && GetTickCount64() >= deadline) {
+          KillTimer(nullptr, wake_timer);
+          throw webview::exception{
+              WEBVIEW_ERROR_CANCELED,
+              "Composition WebView2 initialization timed out"};
+        }
+        if (message.message == WM_TIMER && message.hwnd == nullptr &&
+            message.wParam == wake_timer) {
+          continue;
+        }
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
       }
-      TranslateMessage(&message);
-      DispatchMessageW(&message);
+    } catch (...) {
+      KillTimer(nullptr, wake_timer);
+      throw;
     }
   }
 

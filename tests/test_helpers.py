@@ -2,9 +2,11 @@ import gc
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
+import time
 import weakref
 
 import pytest
@@ -400,6 +402,160 @@ print("CLOSE_CALLBACK_OK")
     assert result.returncode == 0, output
     assert "CLOSE_CALLBACK_OK" in result.stdout
     assert "Traceback" not in output
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires WebView2 Runtime")
+@pytest.mark.parametrize("mode", ["unbind", "rebind", "close"])
+def test_queued_bindings_are_safe_during_unbind_rebind_and_close(
+        tmp_path, mode):
+    script = r"""
+import sys
+import threading
+import pyminiwebview
+from pyminiwebview_helpers import Bridge
+
+mode = sys.argv[2]
+for index in range(10):
+    view = pyminiwebview.WebView(
+        width=420, height=300,
+        user_data_folder=f"{sys.argv[1]}-{index}",
+    )
+    bridge = Bridge(view)
+    old_calls = []
+    new_calls = []
+
+    @bridge.expose
+    def second():
+        old_calls.append("old")
+        return "old"
+
+    def new_second(request_id, request_json):
+        new_calls.append("new")
+        view.js_return(request_id, 0, '"new"')
+
+    @bridge.expose
+    def first():
+        old_calls.append("first")
+        bridge.close()
+        if mode == "rebind":
+            view.js_bind("second", new_second)
+        elif mode == "close":
+            view.close()
+        return "first"
+
+    view.set_html(
+        "<script>first(); for (let i = 0; i < 40; i++) second();</script>"
+    )
+    watchdog = threading.Timer(0.1, view.terminate)
+    if mode != "close":
+        watchdog.start()
+    try:
+        view.run()
+    finally:
+        watchdog.cancel()
+        bridge.close()
+        view.close()
+    assert old_calls == ["first"], (mode, index, old_calls)
+    if mode != "rebind":
+        assert not new_calls, (mode, index, new_calls)
+print("QUEUED_BINDING_STRESS_OK", flush=True)
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(sys.path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            script,
+            str(tmp_path / "webview-data"),
+            mode,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=45,
+        env=environment,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "QUEUED_BINDING_STRESS_OK" in result.stdout
+    assert "Traceback" not in output
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires WebView2 Runtime")
+@pytest.mark.parametrize("periodic_calls", [False, True])
+def test_ctrl_c_stops_run_loop_while_idle_or_in_bridge(
+        tmp_path, periodic_calls):
+    script = r"""
+import ctypes
+import sys
+import threading
+import pyminiwebview
+from pyminiwebview_helpers import Bridge
+
+ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
+view = pyminiwebview.WebView(
+    width=420, height=300, user_data_folder=sys.argv[1]
+)
+bridge = Bridge(view)
+
+@bridge.expose
+def ping():
+    return "pong"
+
+if sys.argv[2] == "periodic":
+    view.set_html("<script>setInterval(() => ping(), 50)</script>")
+else:
+    view.set_html("<p>idle</p>")
+
+def stop_after_timeout():
+    print("WATCHDOG", flush=True)
+    view.terminate()
+
+watchdog = threading.Timer(6, stop_after_timeout)
+watchdog.start()
+try:
+    view.run()
+finally:
+    watchdog.cancel()
+    bridge.close()
+    view.close()
+print("EXITED", flush=True)
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(sys.path)
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            script,
+            str(tmp_path / "webview-data"),
+            "periodic" if periodic_calls else "idle",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+    try:
+        time.sleep(2)
+        process.send_signal(signal.CTRL_C_EVENT)
+        stdout, stderr = process.communicate(timeout=9)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            stdout, stderr = process.communicate()
+    output = stdout + stderr
+    assert process.returncode == 0, output
+    assert "EXITED" in stdout, output
+    assert "WATCHDOG" not in stdout, output
+    assert "KeyboardInterrupt" in stderr, output
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires WebView2 Runtime")

@@ -246,6 +246,9 @@ WEBVIEW_API webview_t webview_create_ex(int debug, void *window,
                                         const char *user_data_folder,
                                         const char *app_name,
                                         int clipboard_permission);
+WEBVIEW_API void webview_note_initialization_quit(int exit_code);
+WEBVIEW_API int webview_take_initialization_quit_code();
+WEBVIEW_API int webview_get_last_initialization_error(const char **message);
 // ==== pyminiwebview patch end ====
 
 /**
@@ -1493,8 +1496,12 @@ protected:
     if (found == bindings.end()) {
       return;
     }
-    const auto &context = found->second;
+// ==== pyminiwebview patch begin ====
+// Keep queued binding contexts independent of map erasure during unbind.
+// Dependency: WebView_js_unbind in src/pyminiwebview/_module.cpp.
+    const auto context = found->second;
     dispatch([=] { context.call(id, args); });
+// ==== pyminiwebview patch end ====
   }
 
   virtual void on_window_created() { inc_window_count(); }
@@ -3600,6 +3607,17 @@ public:
   webview2_com_handler(webview2_com_handler &&other) = delete;
   webview2_com_handler &operator=(webview2_com_handler &&other) = delete;
 
+// ==== pyminiwebview patch begin ====
+// Lifecycle hardening: late COM completion must not access a destroyed engine.
+// Dependency: WebView_init and WebView_close in src/pyminiwebview/_module.cpp.
+  void cancel() noexcept {
+    m_cancelled = true;
+    m_attempt_handler = nullptr;
+    m_cb = nullptr;
+    m_msgCb = nullptr;
+  }
+// ==== pyminiwebview patch end ====
+
   ULONG STDMETHODCALLTYPE AddRef() { return ++m_ref_count; }
   ULONG STDMETHODCALLTYPE Release() {
     if (m_ref_count > 1) {
@@ -3635,6 +3653,9 @@ public:
     return E_NOINTERFACE;
   }
   HRESULT STDMETHODCALLTYPE Invoke(HRESULT res, ICoreWebView2Environment *env) {
+    if (m_cancelled) {
+      return S_OK;
+    }
     if (SUCCEEDED(res)) {
       res = env->CreateCoreWebView2Controller(m_window, this);
       if (SUCCEEDED(res)) {
@@ -3646,6 +3667,12 @@ public:
   }
   HRESULT STDMETHODCALLTYPE Invoke(HRESULT res,
                                    ICoreWebView2Controller *controller) {
+    if (m_cancelled) {
+      if (controller) {
+        controller->Close();
+      }
+      return S_OK;
+    }
     if (FAILED(res)) {
       // See try_create_environment() regarding
       // HRESULT_FROM_WIN32(ERROR_INVALID_STATE).
@@ -3665,7 +3692,9 @@ public:
     webview->add_WebMessageReceived(this, &token);
     webview->add_PermissionRequested(this, &token);
 
-    m_cb(controller, webview);
+    if (m_cb) {
+      m_cb(controller, webview);
+    }
 // ==== pyminiwebview patch begin ====
 // Lifecycle hardening: balance get_CoreWebView2's output reference.
 // Dependency: WebView_init and WebView_close in src/pyminiwebview/_module.cpp.
@@ -3676,6 +3705,9 @@ public:
   HRESULT STDMETHODCALLTYPE
   Invoke(ICoreWebView2 * /*sender*/,
          ICoreWebView2WebMessageReceivedEventArgs *args) {
+    if (m_cancelled || !m_msgCb) {
+      return S_OK;
+    }
     LPWSTR message{};
     auto res = args->TryGetWebMessageAsString(&message);
     if (SUCCEEDED(res)) {
@@ -3716,6 +3748,9 @@ public:
   // The initiating logic for creating the environment is defined by the
   // caller of set_attempt_handler().
   void try_create_environment() noexcept {
+    if (m_cancelled) {
+      return;
+    }
     // WebView creation fails with HRESULT_FROM_WIN32(ERROR_INVALID_STATE) if
     // a running instance using the same user data folder exists, and the
     // Environment objects have different EnvironmentOptions.
@@ -3744,6 +3779,7 @@ private:
   webview2_com_handler_cb_t m_cb;
   std::atomic<ULONG> m_ref_count{1};
   std::function<HRESULT()> m_attempt_handler;
+  std::atomic<bool> m_cancelled{false};
 // ==== pyminiwebview patch begin ====
 // webview_create_ex: store the policy used by PermissionRequested.
 // Dependency: WebView_init in src/pyminiwebview/_module.cpp.
@@ -3822,6 +3858,14 @@ private:
   std::wstring m_id;
   std::wstring m_code;
 };
+
+// ==== pyminiwebview patch begin ====
+// Lifecycle hardening: carry cancellation across the complete constructor unwind.
+// Dependency: WebView_init in src/pyminiwebview/_module.cpp.
+static thread_local int initialization_quit_code = -1;
+static thread_local webview_error_t initialization_error = WEBVIEW_ERROR_OK;
+static thread_local std::string initialization_error_message;
+// ==== pyminiwebview patch end ====
 
 class win32_edge_engine : public engine_base {
 public:
@@ -4066,8 +4110,13 @@ public:
 // ==== pyminiwebview patch begin ====
 // webview_create_ex: pass environment options into Windows embedding.
 // Dependency: WebView_init in src/pyminiwebview/_module.cpp.
-    embed(m_widget, debug, cb, user_data_folder, app_name, clipboard_permission)
-        .ensure_ok();
+    try {
+      embed(m_widget, debug, cb, user_data_folder, app_name, clipboard_permission)
+          .ensure_ok();
+    } catch (...) {
+      release_native();
+      throw;
+    }
 // ==== pyminiwebview patch end ====
   }
 
@@ -4079,68 +4128,7 @@ public:
   }
 // ==== pyminiwebview patch end ====
 
-  virtual ~win32_edge_engine() {
-    if (m_com_handler) {
-      m_com_handler->Release();
-      m_com_handler = nullptr;
-    }
-    if (m_webview) {
-      m_webview->Release();
-      m_webview = nullptr;
-    }
-    if (m_controller) {
-      m_controller->Release();
-      m_controller = nullptr;
-    }
-    // Replace wndproc to avoid callbacks and other bad things during
-    // destruction.
-    auto wndproc = reinterpret_cast<LONG_PTR>(
-        +[](HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) -> LRESULT {
-          return DefWindowProcW(hwnd, msg, wp, lp);
-        });
-    if (m_widget) {
-      SetWindowLongPtrW(m_widget, GWLP_WNDPROC, wndproc);
-    }
-    if (m_window && m_owns_window) {
-      SetWindowLongPtrW(m_window, GWLP_WNDPROC, wndproc);
-    }
-    if (m_widget) {
-      DestroyWindow(m_widget);
-      m_widget = nullptr;
-    }
-    if (m_window) {
-      if (m_owns_window) {
-        DestroyWindow(m_window);
-        on_window_destroyed(true);
-      }
-      m_window = nullptr;
-    }
-    if (m_owns_window) {
-      // Not strictly needed for windows to close immediately but aligns
-      // behavior across backends.
-      deplete_run_loop_event_queue();
-    }
-// ==== pyminiwebview patch begin ====
-// webview_dispatch: drain queued calls so Python callable references are released.
-// Dependency: WebView_dispatch/WebView_dealloc in src/pyminiwebview/_module.cpp.
-    if (m_message_window) {
-      MSG message;
-      while (PeekMessageW(&message, m_message_window, WM_APP, WM_APP, PM_REMOVE)) {
-        auto *f = reinterpret_cast<dispatch_fn_t *>(message.lParam);
-        if (f) {
-          try {
-            (*f)();
-          } catch (...) {
-          }
-          delete f;
-        }
-      }
-      SetWindowLongPtrW(m_message_window, GWLP_WNDPROC, wndproc);
-      DestroyWindow(m_message_window);
-      m_message_window = nullptr;
-    }
-// ==== pyminiwebview patch end ====
-  }
+  virtual ~win32_edge_engine() { release_native(); }
 
   win32_edge_engine(const win32_edge_engine &other) = delete;
   win32_edge_engine &operator=(const win32_edge_engine &other) = delete;
@@ -4252,27 +4240,87 @@ protected:
   }
 
   user_script add_user_script_impl(const std::string &js) override {
+    struct ScriptState {
+      HRESULT result = E_FAIL;
+      std::wstring id;
+      std::atomic<bool> done{false};
+      std::atomic<bool> cancelled{false};
+    };
+    auto state = std::make_shared<ScriptState>();
     auto wjs = widen_string(js);
-    std::wstring script_id;
-    bool done{};
-    webview2_user_script_added_handler handler{[&](HRESULT res, LPCWSTR id) {
-      if (SUCCEEDED(res)) {
-        script_id = id;
-      }
-      done = true;
-    }};
+    auto *handler = new webview2_user_script_added_handler{
+        [state](HRESULT res, LPCWSTR id) {
+          if (state->cancelled) {
+            return;
+          }
+          state->result = res;
+          if (SUCCEEDED(res)) {
+            if (!id) {
+              state->result = E_FAIL;
+            } else {
+              try {
+                state->id = id;
+              } catch (...) {
+                state->result = E_OUTOFMEMORY;
+              }
+            }
+          }
+          state->done = true;
+        }};
     auto res =
-        m_webview->AddScriptToExecuteOnDocumentCreated(wjs.c_str(), &handler);
-    if (SUCCEEDED(res)) {
-      // Sadly we need to pump the even loop in order to get the script ID.
-      while (!done) {
-        deplete_run_loop_event_queue();
-      }
+        m_webview->AddScriptToExecuteOnDocumentCreated(wjs.c_str(), handler);
+    handler->Release();
+    if (FAILED(res)) {
+      state->cancelled = true;
+      throw exception{WEBVIEW_ERROR_UNSPECIFIED,
+                      "AddScriptToExecuteOnDocumentCreated failed"};
     }
-    // TODO: There's a non-zero chance that we didn't get the script ID.
-    //       We need to convey the error somehow.
+    constexpr ULONGLONG initialization_timeout_ms = 30000;
+    const ULONGLONG deadline = GetTickCount64() + initialization_timeout_ms;
+    const UINT_PTR wake_timer = SetTimer(nullptr, 0, 250, nullptr);
+    if (!wake_timer) {
+      state->cancelled = true;
+      throw exception{WEBVIEW_ERROR_UNSPECIFIED,
+                      "Failed to create user script timeout timer"};
+    }
+    try {
+      while (!state->done) {
+        MSG msg;
+        const BOOL wait_result = GetMessageW(&msg, nullptr, 0, 0);
+        if (wait_result <= 0) {
+          if (wait_result == 0) {
+            initialization_quit_code = static_cast<int>(msg.wParam);
+            PostQuitMessage(initialization_quit_code);
+          }
+          throw exception{wait_result == 0 ? WEBVIEW_ERROR_CANCELED
+                                           : WEBVIEW_ERROR_UNSPECIFIED,
+                          wait_result == 0
+                              ? "WebView2 user script creation canceled"
+                              : "WebView2 user script GetMessageW failed"};
+        }
+        if (msg.message == WM_TIMER && msg.hwnd == nullptr &&
+            msg.wParam == wake_timer) {
+          if (GetTickCount64() >= deadline) {
+            throw exception{WEBVIEW_ERROR_CANCELED,
+                            "WebView2 user script creation timed out"};
+          }
+          continue;
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
+    } catch (...) {
+      state->cancelled = true;
+      KillTimer(nullptr, wake_timer);
+      throw;
+    }
+    KillTimer(nullptr, wake_timer);
+    if (FAILED(state->result)) {
+      throw exception{WEBVIEW_ERROR_UNSPECIFIED,
+                      "WebView2 user script creation failed"};
+    }
     return user_script{js, std::unique_ptr<user_script::impl>{
-                               new user_script::impl{script_id, wjs}}};
+                               new user_script::impl{state->id, wjs}}};
   }
 
   void
@@ -4292,11 +4340,68 @@ protected:
 
 private:
 // ==== pyminiwebview patch begin ====
+// Lifecycle hardening: constructors that throw must release partial native state.
+// Dependency: WebView_init and WebView_close in src/pyminiwebview/_module.cpp.
+  void release_native() noexcept {
+    if (m_com_handler) {
+      m_com_handler->cancel();
+      m_com_handler->Release();
+      m_com_handler = nullptr;
+    }
+    if (m_webview) {
+      m_webview->Release();
+      m_webview = nullptr;
+    }
+    if (m_controller) {
+      m_controller->Release();
+      m_controller = nullptr;
+    }
+    auto wndproc = reinterpret_cast<LONG_PTR>(
+        +[](HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) -> LRESULT {
+          return DefWindowProcW(hwnd, msg, wp, lp);
+        });
+    if (m_widget) {
+      SetWindowLongPtrW(m_widget, GWLP_WNDPROC, wndproc);
+    }
+    if (m_window && m_owns_window) {
+      SetWindowLongPtrW(m_window, GWLP_WNDPROC, wndproc);
+    }
+    if (m_widget) {
+      DestroyWindow(m_widget);
+      m_widget = nullptr;
+    }
+    if (m_window) {
+      if (m_owns_window) {
+        DestroyWindow(m_window);
+        on_window_destroyed(true);
+      }
+      m_window = nullptr;
+    }
+    if (m_message_window) {
+      MSG message;
+      while (PeekMessageW(&message, m_message_window, WM_APP, WM_APP, PM_REMOVE)) {
+        auto *f = reinterpret_cast<dispatch_fn_t *>(message.lParam);
+        if (f) {
+          try {
+            (*f)();
+          } catch (...) {
+          }
+          delete f;
+        }
+      }
+      SetWindowLongPtrW(m_message_window, GWLP_WNDPROC, wndproc);
+      DestroyWindow(m_message_window);
+      m_message_window = nullptr;
+    }
+  }
+// ==== pyminiwebview patch end ====
+// ==== pyminiwebview patch begin ====
 // webview_create_ex: use explicit paths or LOCALAPPDATA/app_name and apply policy.
 // Dependency: WebView_init in src/pyminiwebview/_module.cpp.
   noresult embed(HWND wnd, bool debug, msg_cb_t cb,
                  const char *user_data_folder, const char *app_name,
                  int clipboard_permission) {
+    initialization_quit_code = -1;
     std::atomic_flag flag = ATOMIC_FLAG_INIT;
     flag.test_and_set();
 
@@ -4345,23 +4450,51 @@ private:
     m_com_handler->try_create_environment();
 
     // Pump the message loop until WebView2 has finished initialization.
+    constexpr ULONGLONG initialization_timeout_ms = 30000;
+    const ULONGLONG deadline = GetTickCount64() + initialization_timeout_ms;
+    const UINT_PTR wake_timer = SetTimer(nullptr, 0, 250, nullptr);
+    if (!wake_timer) {
+      return error_info{WEBVIEW_ERROR_UNSPECIFIED,
+                        "Failed to create initialization timeout timer"};
+    }
     bool got_quit_msg = false;
+    bool get_message_failed = false;
+    bool timed_out = false;
     MSG msg;
-    while (flag.test_and_set() && GetMessageW(&msg, nullptr, 0, 0) >= 0) {
-      if (msg.message == WM_QUIT) {
-        got_quit_msg = true;
+    while (flag.test_and_set()) {
+      const BOOL result = GetMessageW(&msg, nullptr, 0, 0);
+      if (result <= 0) {
+        got_quit_msg = result == 0;
+        get_message_failed = result < 0;
         break;
+      }
+      if (msg.message == WM_TIMER && msg.hwnd == nullptr &&
+          msg.wParam == wake_timer) {
+        if (GetTickCount64() >= deadline) {
+          timed_out = true;
+          break;
+        }
+        continue;
       }
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
     }
+    KillTimer(nullptr, wake_timer);
     if (got_quit_msg) {
 // ==== pyminiwebview patch begin ====
-// Lifecycle hardening: preserve cancellation for an outer message loop.
+// Lifecycle hardening: restore outer cancellation after native cleanup.
 // Dependency: WebView_init and WebView_run in src/pyminiwebview/_module.cpp.
-      PostQuitMessage(static_cast<int>(msg.wParam));
+      initialization_quit_code = static_cast<int>(msg.wParam);
 // ==== pyminiwebview patch end ====
       return error_info{WEBVIEW_ERROR_CANCELED};
+    }
+    if (timed_out) {
+      return error_info{WEBVIEW_ERROR_CANCELED,
+                        "WebView2 initialization timed out"};
+    }
+    if (get_message_failed) {
+      return error_info{WEBVIEW_ERROR_UNSPECIFIED,
+                        "WebView2 initialization GetMessageW failed"};
     }
     if (!m_controller || !m_webview) {
       return error_info{WEBVIEW_ERROR_INVALID_STATE};
@@ -4490,19 +4623,6 @@ private:
   }
 // ==== pyminiwebview patch end ====
 
-  // Blocks while depleting the run loop of events.
-  void deplete_run_loop_event_queue() {
-    bool done{};
-    dispatch([&] { done = true; });
-    while (!done) {
-      MSG msg;
-      if (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-      }
-    }
-  }
-
   // The app is expected to call CoInitializeEx before
   // CreateCoreWebView2EnvironmentWithOptions.
   // Source: https://docs.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl#createcorewebview2environmentwithoptions
@@ -4566,19 +4686,46 @@ WEBVIEW_API webview_t webview_create_ex(int debug, void *wnd,
                                         const char *user_data_folder,
                                         const char *app_name,
                                         int clipboard_permission) {
-  using namespace webview::detail;
-  webview::webview *w{};
-  auto err = api_filter(
-      [=]() -> webview::result<webview::webview *> {
-        return new webview::webview{static_cast<bool>(debug), wnd,
-                                    user_data_folder, app_name,
-                                    clipboard_permission};
-      },
-      [&](webview::webview *w_) { w = w_; });
-  if (err == WEBVIEW_ERROR_OK) {
-    return w;
+  webview::detail::initialization_error = WEBVIEW_ERROR_OK;
+  webview::detail::initialization_error_message.clear();
+  try {
+    return new webview::webview{static_cast<bool>(debug), wnd, user_data_folder,
+                                app_name, clipboard_permission};
+  } catch (const webview::exception &error) {
+    webview::detail::initialization_error = error.error().code();
+    webview::detail::initialization_error_message = error.error().message();
+  } catch (const std::bad_alloc &) {
+    webview::detail::initialization_error = WEBVIEW_ERROR_UNSPECIFIED;
+    webview::detail::initialization_error_message = "Out of memory";
+  } catch (const std::exception &error) {
+    webview::detail::initialization_error = WEBVIEW_ERROR_UNSPECIFIED;
+    webview::detail::initialization_error_message = error.what();
+  } catch (...) {
+    webview::detail::initialization_error = WEBVIEW_ERROR_UNSPECIFIED;
+    webview::detail::initialization_error_message = "Unknown native error";
   }
   return nullptr;
+}
+// ==== pyminiwebview patch end ====
+
+// ==== pyminiwebview patch begin ====
+// Lifecycle hardening: restore WM_QUIT only after native construction has unwound.
+// Dependency: WebView_init in src/pyminiwebview/_module.cpp.
+WEBVIEW_API void webview_note_initialization_quit(int exit_code) {
+  webview::detail::initialization_quit_code = exit_code;
+}
+
+WEBVIEW_API int webview_take_initialization_quit_code() {
+  const int exit_code = webview::detail::initialization_quit_code;
+  webview::detail::initialization_quit_code = -1;
+  return exit_code;
+}
+
+WEBVIEW_API int webview_get_last_initialization_error(const char **message) {
+  if (message) {
+    *message = webview::detail::initialization_error_message.c_str();
+  }
+  return static_cast<int>(webview::detail::initialization_error);
 }
 // ==== pyminiwebview patch end ====
 

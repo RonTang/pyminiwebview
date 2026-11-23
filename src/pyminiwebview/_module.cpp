@@ -23,6 +23,32 @@
 #include "_composition.h"
 
 constexpr UINT_PTR STARTUP_REVEAL_TIMER_ID = 0x504D5677;
+constexpr UINT SIGNAL_CHECK_INTERVAL_MS = 100;
+static thread_local bool initialization_signal_check_active = false;
+
+static void handle_ui_callback_exception() {
+  if (PyErr_ExceptionMatches(PyExc_KeyboardInterrupt)) {
+    PostQuitMessage(0);
+  }
+  PyErr_PrintEx(0);
+}
+
+static void CALLBACK signal_check_timeout(HWND window, UINT message,
+                                          UINT_PTR timer_id, DWORD elapsed_ms) {
+  (void)window;
+  (void)message;
+  (void)timer_id;
+  (void)elapsed_ms;
+  PyGILState_STATE gil_state = PyGILState_Ensure();
+  if (PyErr_CheckSignals() < 0) {
+    if (initialization_signal_check_active) {
+      PostQuitMessage(0);
+    } else {
+      handle_ui_callback_exception();
+    }
+  }
+  PyGILState_Release(gil_state);
+}
 
 static void reveal_native_window(HWND window) {
   if (window == nullptr || !IsWindow(window)) {
@@ -289,6 +315,7 @@ typedef struct {
   DWORD ui_thread;
   int closed;
   int running;
+  int initializing;
 } WebViewObject;
 
 struct DispatchCall {
@@ -299,6 +326,7 @@ struct DispatchCall {
 
 struct BindingCall {
   PyObject *callable;
+  int release_queued;
 };
 
 struct NativeFinalizer {
@@ -333,6 +361,13 @@ static int set_webview2_error(const char *operation, HRESULT result) {
                "%s failed (HRESULT 0x%08lX); WebView2 Runtime may be too old",
                operation, static_cast<unsigned long>(result));
   return -1;
+}
+
+static void restore_initialization_quit() {
+  const int exit_code = webview_take_initialization_quit_code();
+  if (exit_code >= 0) {
+    PostQuitMessage(exit_code);
+  }
 }
 
 static int require_webview(WebViewObject *self) {
@@ -916,12 +951,12 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
                                    &transparent)) {
     return -1;
   }
-  self->ui_thread = GetCurrentThreadId();
-  if (self->webview != nullptr || self->closed) {
+  if (self->webview != nullptr || self->closed || self->initializing) {
     PyErr_SetString(PyExc_RuntimeError,
                     "WebView is already initialized or is closed");
     return -1;
   }
+  self->ui_thread = GetCurrentThreadId();
   if (width <= 0 || height <= 0) {
     PyErr_SetString(PyExc_ValueError, "width and height must be positive");
     return -1;
@@ -948,6 +983,16 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
     return -1;
   }
 
+  MSG pending_quit;
+  if (PeekMessageW(&pending_quit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) {
+    PostQuitMessage(static_cast<int>(pending_quit.wParam));
+    PyErr_SetString(PyExc_RuntimeError, "WebView2 initialization canceled");
+    return -1;
+  }
+  self->initializing = 1;
+  UINT_PTR initialization_signal_timer =
+      SetTimer(nullptr, 0, SIGNAL_CHECK_INTERVAL_MS, signal_check_timeout);
+  initialization_signal_check_active = true;
   try {
     StandaloneShowSuppressor suppress_initial_show(parent == nullptr);
     if (composition_hosting) {
@@ -958,17 +1003,70 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
       self->webview = webview_create_ex(debug, parent, user_data_folder, app_name,
                                         permission);
     }
+  } catch (const webview::exception &error) {
+    self->initializing = 0;
+    initialization_signal_check_active = false;
+    if (initialization_signal_timer != 0) {
+      KillTimer(nullptr, initialization_signal_timer);
+    }
+    if (!PyErr_Occurred()) {
+      PyErr_Format(PyExc_RuntimeError,
+                   "WebView2 initialization failed: %s (webview error %d)",
+                   error.what(), static_cast<int>(error.error().code()));
+    }
+    restore_initialization_quit();
+    return -1;
   } catch (const std::bad_alloc &) {
-    PyErr_NoMemory();
+    self->initializing = 0;
+    initialization_signal_check_active = false;
+    if (initialization_signal_timer != 0) {
+      KillTimer(nullptr, initialization_signal_timer);
+    }
+    if (!PyErr_Occurred()) {
+      PyErr_NoMemory();
+    }
+    restore_initialization_quit();
     return -1;
   } catch (...) {
-    PyErr_SetString(PyExc_RuntimeError, "WebView2 initialization failed");
+    self->initializing = 0;
+    initialization_signal_check_active = false;
+    if (initialization_signal_timer != 0) {
+      KillTimer(nullptr, initialization_signal_timer);
+    }
+    if (!PyErr_Occurred()) {
+      PyErr_SetString(PyExc_RuntimeError, "WebView2 initialization failed");
+    }
+    restore_initialization_quit();
+    return -1;
+  }
+  initialization_signal_check_active = false;
+  if (initialization_signal_timer != 0) {
+    KillTimer(nullptr, initialization_signal_timer);
+  }
+  if (PyErr_Occurred()) {
+    if (self->webview != nullptr) {
+      goto error;
+    }
+    self->initializing = 0;
+    restore_initialization_quit();
     return -1;
   }
   if (self->webview == nullptr) {
-    PyErr_SetString(PyExc_RuntimeError,
-                    "WebView2 initialization failed; check the runtime, window, "
-                    "COM apartment, and user data folder");
+    self->initializing = 0;
+    const char *message = nullptr;
+    const int initialization_error =
+        webview_get_last_initialization_error(&message);
+    if (message != nullptr && *message != '\0') {
+      PyErr_Format(PyExc_RuntimeError,
+                   "WebView2 initialization failed: %s (webview error %d)",
+                   message, initialization_error);
+    } else {
+      PyErr_Format(PyExc_RuntimeError,
+                   "WebView2 initialization failed (webview error %d); check "
+                   "the runtime, window, COM apartment, and user data folder",
+                   initialization_error);
+    }
+    restore_initialization_quit();
     return -1;
   }
 
@@ -1040,9 +1138,11 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
     }
     self->content_requested = 1;
   }
+  self->initializing = 0;
   return 0;
 
 error:
+  self->initializing = 0;
   if (self->autosize) {
     RemoveWindowSubclass(self->parent, auto_size_proc,
                          reinterpret_cast<UINT_PTR>(self));
@@ -1053,7 +1153,10 @@ error:
   NativeFinalizer finalizer{};
   detach_native(self, &finalizer);
   destroy_native_resources(&finalizer);
-  Py_XDECREF(finalizer.bindings);
+  self->bindings = finalizer.bindings;
+  finalizer.bindings = nullptr;
+  self->content_requested = 0;
+  restore_initialization_quit();
   return -1;
 }
 
@@ -1239,6 +1342,8 @@ static PyObject *WebView_run(WebViewObject *self, PyObject *args) {
     }
   }
   webview_error_t error;
+  UINT_PTR signal_timer =
+      SetTimer(nullptr, 0, SIGNAL_CHECK_INTERVAL_MS, signal_check_timeout);
   self->running = 1;
   // The message loop blocks for an arbitrary time and never needs the GIL.
   Py_BEGIN_ALLOW_THREADS
@@ -1247,6 +1352,9 @@ static PyObject *WebView_run(WebViewObject *self, PyObject *args) {
                                         reinterpret_cast<HACCEL>(haccel));
   Py_END_ALLOW_THREADS
   self->running = 0;
+  if (signal_timer != 0) {
+    KillTimer(nullptr, signal_timer);
+  }
   if (check_webview_error(error, "webview_run_with_accelerators") < 0) {
     return nullptr;
   }
@@ -1294,7 +1402,7 @@ static void dispatch_callback(webview_t webview, void *arg) noexcept {
   if (should_call) {
     PyObject *result = PyObject_CallObject(callable, nullptr);
     if (result == nullptr) {
-      PyErr_PrintEx(0);
+      handle_ui_callback_exception();
     } else {
       Py_DECREF(result);
     }
@@ -1352,7 +1460,17 @@ static void binding_call_destructor(PyObject *capsule) {
   }
   BindingCall *call = static_cast<BindingCall *>(pointer);
   Py_XDECREF(call->callable);
-  delete call;
+  if (!call->release_queued) {
+    delete call;
+  }
+}
+
+static void binding_call_release(webview_t webview, void *arg) noexcept {
+  (void)webview;
+  std::unique_ptr<BindingCall> call(static_cast<BindingCall *>(arg));
+  PyGILState_STATE gil_state = PyGILState_Ensure();
+  Py_XDECREF(call->callable);
+  PyGILState_Release(gil_state);
 }
 
 static void binding_callback(const char *id, const char *request,
@@ -1366,15 +1484,15 @@ static void binding_callback(const char *id, const char *request,
   }
   PyObject *arguments = Py_BuildValue("(ss)", id, request);
   if (arguments == nullptr) {
-    PyErr_PrintEx(0);
+    handle_ui_callback_exception();
   } else {
-    // Keep a local reference in case the callback unbinds and frees BindingCall.
+    // Keep a local reference in case the callback unbinds the Python callable.
     PyObject *callable = call->callable;
     Py_INCREF(callable);
     PyObject *result = PyObject_CallObject(callable, arguments);
     Py_DECREF(arguments);
     if (result == nullptr) {
-      PyErr_PrintEx(0);
+      handle_ui_callback_exception();
     } else {
       Py_DECREF(result);
     }
@@ -1399,7 +1517,7 @@ static PyObject *WebView_js_bind(WebViewObject *self, PyObject *args) {
 
   BindingCall *call;
   try {
-    call = new BindingCall{callable};
+    call = new BindingCall{callable, 0};
   } catch (const std::bad_alloc &) {
     return PyErr_NoMemory();
   }
@@ -1417,7 +1535,7 @@ static PyObject *WebView_js_bind(WebViewObject *self, PyObject *args) {
     set_webview_error("webview_bind", error);
     return nullptr;
   }
-  // The capsule owns the callback until js_unbind or object destruction.
+  // Ownership transfers to the release callback after a successful unbind.
   if (PyDict_SetItemString(self->bindings, name, capsule) < 0) {
     webview_unbind(self->webview, name);
     Py_DECREF(capsule);
@@ -1432,14 +1550,57 @@ static PyObject *WebView_js_unbind(WebViewObject *self, PyObject *args) {
   if (!PyArg_ParseTuple(args, "s:js_unbind", &name)) {
     return nullptr;
   }
-  if (require_webview(self) < 0 ||
-      check_webview_error(webview_unbind(self->webview, name),
-                          "webview_unbind") < 0) {
+  if (require_webview(self) < 0) {
     return nullptr;
   }
-  if (PyDict_DelItemString(self->bindings, name) < 0) {
+  PyObject *capsule = PyDict_GetItemString(self->bindings, name);
+  if (capsule == nullptr) {
+    if (check_webview_error(webview_unbind(self->webview, name),
+                            "webview_unbind") < 0) {
+      return nullptr;
+    }
+    if (PyDict_DelItemString(self->bindings, name) < 0) {
+      return nullptr;
+    }
+    Py_RETURN_NONE;
+  }
+  Py_INCREF(capsule);
+  BindingCall *call =
+      static_cast<BindingCall *>(PyCapsule_GetPointer(capsule, nullptr));
+  if (call == nullptr) {
+    Py_DECREF(capsule);
     return nullptr;
   }
+  PyObject *callable = call->callable;
+  Py_XINCREF(callable);
+  Py_CLEAR(call->callable);
+  webview_error_t error = webview_unbind(self->webview, name);
+  if (error != WEBVIEW_ERROR_OK) {
+    Py_XDECREF(call->callable);
+    call->callable = callable;
+    Py_DECREF(capsule);
+    set_webview_error("webview_unbind", error);
+    return nullptr;
+  }
+  error = self->webview == nullptr
+              ? WEBVIEW_ERROR_INVALID_STATE
+              : webview_dispatch(self->webview, binding_call_release, call);
+  if (error != WEBVIEW_ERROR_OK) {
+    Py_XDECREF(callable);
+    if (PyDict_GetItemString(self->bindings, name) == capsule) {
+      Py_DECREF(capsule);
+    }
+    // Otherwise retain the local capsule reference; queued calls may still exist.
+    set_webview_error("webview_dispatch binding release", error);
+    return nullptr;
+  }
+  call->release_queued = 1;
+  if (PyDict_GetItemString(self->bindings, name) == capsule &&
+      PyDict_DelItemString(self->bindings, name) < 0) {
+    PyErr_Clear();
+  }
+  Py_DECREF(capsule);
+  Py_XDECREF(callable);
   Py_RETURN_NONE;
 }
 
@@ -1703,7 +1864,7 @@ PyMODINIT_FUNC PyInit_pyminiwebview(void) {
                    WEBVIEW_NATIVE_HANDLE_KIND_UI_WIDGET) < 0 ||
       add_constant(module, "NATIVE_HANDLE_KIND_BROWSER_CONTROLLER",
                    WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER) < 0 ||
-      PyModule_AddStringConstant(module, "__version__", "0.1.10") < 0) {
+      PyModule_AddStringConstant(module, "__version__", PYMINIWEBVIEW_VERSION) < 0) {
     Py_DECREF(module);
     return nullptr;
   }

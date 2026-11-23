@@ -105,8 +105,20 @@ class TrayIcon:
 
     def __init__(self, parent_hwnd=None, tooltip="App", on_click=None,
                  on_left_click=None, on_right_click=None):
+        if not isinstance(tooltip, str):
+            raise TypeError("tooltip must be a string")
+        if "\x00" in tooltip:
+            raise ValueError("tooltip must not contain NUL characters")
         if len(tooltip.encode("utf-16-le")) // 2 > 127:
             raise ValueError("tooltip must fit in 127 UTF-16 code units")
+        callbacks = {
+            "on_click": on_click,
+            "on_left_click": on_left_click,
+            "on_right_click": on_right_click,
+        }
+        for name, callback in callbacks.items():
+            if callback is not None and not callable(callback):
+                raise TypeError(f"{name} must be callable or None")
         self._on_click = on_click
         self._on_left_click = on_left_click
         self._on_right_click = on_right_click
@@ -159,8 +171,12 @@ class TrayIcon:
             None, ctypes.cast(ctypes.c_void_p(_IDI_APPLICATION), wintypes.LPCWSTR)
         )
         data.szTip = tooltip
+        ctypes.set_last_error(0)
         if not _shell32.Shell_NotifyIconW(_NIM_ADD, ctypes.byref(data)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            error = ctypes.get_last_error()
+            if error:
+                raise ctypes.WinError(error)
+            raise OSError("Shell_NotifyIconW(NIM_ADD) failed")
         self._icon_added = True
 
     def _wndproc(self, hwnd, message, wparam, lparam):
@@ -179,16 +195,26 @@ class TrayIcon:
     def remove(self):
         if self._hwnd is not None:
             if self._icon_added:
-                _shell32.Shell_NotifyIconW(
-                    _NIM_DELETE, ctypes.byref(self._notify_data())
-                )
+                ctypes.set_last_error(0)
+                if not _shell32.Shell_NotifyIconW(
+                        _NIM_DELETE, ctypes.byref(self._notify_data())):
+                    _logger.warning(
+                        "TrayIcon deletion failed (Win32 error %s)",
+                        ctypes.get_last_error(),
+                    )
                 self._icon_added = False
             if not _user32.DestroyWindow(self._hwnd):
                 _logger.warning(
                     "TrayIcon window destruction failed (Win32 error %s)",
                     ctypes.get_last_error(),
                 )
+                return
             self._hwnd = None
         if self._class_registered:
-            _user32.UnregisterClassW(self._class_name, self._hinstance)
+            if not _user32.UnregisterClassW(self._class_name, self._hinstance):
+                _logger.warning(
+                    "TrayIcon class unregistration failed (Win32 error %s)",
+                    ctypes.get_last_error(),
+                )
+                return
             self._class_registered = False

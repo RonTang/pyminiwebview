@@ -10,11 +10,13 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 IMPORT_CHECK = """
+import importlib.metadata
 from pyminiwebview_helpers import AsyncBridge, Bridge, call_js
 from pyminiwebview_win32 import FramelessWindow, TrayIcon, open_file_dialog, save_file_dialog
 import pyminiwebview
 import pyminiwebview_helpers
 import pyminiwebview_win32
+assert pyminiwebview.__version__ == importlib.metadata.version("pyminiwebview")
 print(pyminiwebview.__file__)
 print(pyminiwebview_helpers.__file__)
 print(pyminiwebview_win32.__file__)

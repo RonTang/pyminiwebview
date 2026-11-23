@@ -11,19 +11,19 @@
 分层如下：
 
 1. `pyminiwebview.WebView`：重写的 CPython Stable ABI 绑定层，负责参数检查、GIL、Python 引用生命周期和异常转换。
-2. `vendor/webview/`：vendored 的 webview C++ 引擎，负责 WebView2 COM 对象、消息窗口和事件循环；仅保留 `create_ex`、Win32 `run` 和 `dispatch` 三个 API 补丁。
+2. `vendor/webview/`：vendored 的 webview C++ 引擎，负责 WebView2 COM 对象、消息窗口和事件循环；通过单一 patch 维护 `create_ex`、Win32 `run` / `dispatch` 以及初始化取消、超时和生命周期扩展。
 3. `pyminiwebview_helpers`：纯 Python 的同步／异步 Bridge 和安全 JS 调用助手；`pyminiwebview_win32`：可选的无边框窗口、文件对话框与托盘能力。两者均无第三方运行时依赖。
 4. 应用或 GUI 框架：负责业务与自定义宿主；使用 `FramelessWindow` 时，宿主窗口和完整生命周期由助手封装。
 
 本扩展只做 WebView2 内在操作。嵌入模式下，全屏、宿主窗口标题、窗口图标、菜单、快捷键、文件对话框、托盘、注册表等均由应用处理，可使用 `ctypes` 或 `pywin32`。因此没有沿用原项目通过 `SetParent` 拆出控件的 `set_fullscreen`；嵌入模式的 `set_title` 也不会修改宿主窗口。
 
-除 `terminate`、`js_return` 和 `dispatch` 外，其余方法应在创建实例的 UI 线程调用。`dispatch(fn)` 接受无参数 callable，在 UI 线程执行； callable 抛出的异常通过 `PyErr_PrintEx(0)` 输出，不会跨原生消息边界传播。
+除 `terminate`、`js_return` 和 `dispatch` 外，其余方法应在创建实例的 UI 线程调用。`dispatch(fn)` 接受无参数 callable，在 UI 线程执行；普通异常通过 `PyErr_PrintEx(0)` 输出，`KeyboardInterrupt` 会终止消息循环，不会跨原生消息边界重新抛出。
 
 ## 安装与运行
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
 
-当前版本为 `0.1.10`，发布产物已在本机完成隔离安装测试。正式 PyPI 已发布，可安装最新可用版本：
+当前版本为 `0.1.11`，发布产物已在本机完成隔离安装测试。正式 PyPI 已发布，可安装最新可用版本：
 
 ```bash
 python -m pip install pyminiwebview
@@ -32,7 +32,7 @@ python -m pip install pyminiwebview
 如需验证 TestPyPI 发布，可使用：
 
 ```bash
-python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.10
+python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.11
 ```
 
 TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可以从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后还可从 Releases 页面获取。
@@ -40,7 +40,7 @@ TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可�
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.10-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.11-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将文件命名为 `pyminiwebview.pyd`，放到应用脚本同目录或 `sys.path` 包含的其他目录，然后执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 wheel 可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
@@ -387,7 +387,8 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 
 - 1000 次绑定/解绑的回调引用计数稳定，以及导航、HTML 加载和销毁。
 - 独立窗口构造期隐藏、首帧显示和请求尺寸稳定；无边框助手的真实宿主、内置桥接、首帧和清理。
-- 初始化取消在子进程中保留 `WM_QUIT` 退出码；8 轮真实 Composition 创建、用户脚本注入与关闭压力测试。
+- 初始化取消在子进程中保留 `WM_QUIT` 退出码，普通与 Composition 各覆盖 6 轮；另有 8 轮真实 Composition 创建、用户脚本注入与关闭压力测试。
+- 真实 WebView2 排队绑定在解绑、重绑和关闭时安全释放，Ctrl+C 能终止空闲或周期 Bridge 回调中的消息循环；重复初始化保留原实例与 UI 线程。
 - 实际 JS→Python 回调与 `js_return`。
 - `run()` 期间 `threading.Timer` 能执行，且 `dispatch` 在 UI 线程运行。
 - 通过 `CreateWindowExW` 创建宿主窗口并验证 autosize。
@@ -395,7 +396,8 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - 幂等 `close()`、上下文管理器、绑定引用环回收、非 UI 线程 GC 后的 UI 原生收尾。
 - 排队 dispatch 在 close/析构时取消且释放引用，反复创建销毁和 dispatch/terminate/close 并发压力。
 - 非法参数抛出 Python 异常，64 位 `HWND` 参数解析。
-- 文件对话框 flags、路径缓冲区、取消/错误语义，以及真实托盘创建、消息回调和清理。
+- 文件对话框 flags、路径缓冲区、取消/错误语义；真实托盘创建、消息回调和清理，以及非法参数、原生失败诊断和清理重试边界。
+- 无边框窗口初始、最小、固定及手动缩放尺寸的逻辑像素到 DPI 物理像素换算。
 - Bridge 的 JSON 成功／错误路径、call_js 参数与函数名校验，以及真实 WebView2 双向调用和引用回收。
 - AsyncBridge 的并发、异常、取消、关闭超时、启动失败回收、executor 关闭边界和引用回收；1000 次并发调用、反复创建销毁，以及真实 WebView2 的 300 次混合结果压力测试。
 - 01、02、03、05、07、08 通过子进程真实启动、执行页面交互并正常清理退出；透明桌宠额外检查 WebView2 背景 alpha、工具窗口、置顶和点击穿透样式。
@@ -416,6 +418,15 @@ GitHub Actions 还将同一个 cp39 abi3 wheel 安装到 CPython 3.9、3.10、3.
 Win32 助手另需人工确认：打开对话框能选择已有文件、取消返回 `None`；保存对话框允许新文件并提示覆盖；托盘左右键触发回调，`remove()` 后无图标残留。
 
 ## CHANGELOG
+
+### 0.1.11
+
+- 修复 JavaScript 绑定在解绑、重绑和窗口关闭时的排队回调生命周期；Bridge 先停止接收新回调再解绑，并补充真实 WebView2 压力测试及空闲、周期回调中的 Ctrl+C 回归。
+- 普通、Composition 和用户脚本初始化增加 30 秒有界等待，统一处理 `WM_QUIT` 取消；隔离迟到 COM 回调，构造失败时释放半初始化窗口与 COM 资源，避免延迟崩溃和退出码丢失。
+- 重复初始化不再覆盖原实例的 UI 线程或破坏可用状态，参数校验失败后可正常重试；`FramelessWindow` 的初始、最小、固定和手动缩放尺寸统一按当前 DPI 从逻辑像素换算。
+- 初始化异常保留原生错误码、HRESULT 和诊断消息；托盘校验 tooltip 与回调参数，窗口销毁或窗口类注销失败时保留状态以供重试并记录 Win32 错误。
+- 构建版本统一从 `pyproject.toml` 注入扩展，wheel 测试核对包元数据，release 工作流拒绝标签与项目版本不一致的发布；vendor patch 已重新生成并验证可复现当前引擎。
+- 本轮仅进行稳定性修复，不新增公开 Python 功能；完整源码测试和隔离安装后的 wheel 测试均覆盖 223 项用例。
 
 ### 0.1.10
 
