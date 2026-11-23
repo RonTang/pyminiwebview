@@ -1,6 +1,7 @@
 import inspect
 import json
 import logging
+import weakref
 
 from .js import _dumps_json
 
@@ -54,6 +55,9 @@ class Bridge:
                 self._view.js_unbind(name)
             except KeyError:
                 pass
+        self._detach()
+
+    def _detach(self):
         self._names.clear()
         self._view = None
 
@@ -114,8 +118,19 @@ class Bridge:
             raise RuntimeError("Bridge is closed")
 
         view = self._view
+        bridge_ref = weakref.ref(self)
 
         def callback(request_id, request_json):
+            def respond(request_id, status, response):
+                bridge = bridge_ref()
+                if bridge is not None and bridge._view is None:
+                    return
+                try:
+                    view.js_return(request_id, status, response)
+                except RuntimeError as error:
+                    if "closed" not in str(error):
+                        raise
+
             try:
                 arguments = json.loads(
                     request_json, parse_constant=_reject_nonstandard_number
@@ -127,9 +142,9 @@ class Bridge:
             except Exception as error:
                 _logger.exception("Bridge call %r failed", name)
                 response = _dumps_json(_error_result(error))
-                view.js_return(request_id, 1, response)
+                respond(request_id, 1, response)
             else:
-                view.js_return(request_id, 0, response)
+                respond(request_id, 0, response)
 
         self._view.js_bind(name, callback)
         self._names.add(name)

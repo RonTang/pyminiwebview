@@ -315,6 +315,27 @@ def test_repeated_composition_create_script_and_close(tmp_path):
             window.close()
 
 
+def test_frameless_wm_close_detaches_bridge_without_unbinding(monkeypatch):
+    calls = []
+    window = FramelessWindow.__new__(FramelessWindow)
+    window.hwnd = 123
+    window.view = None
+    window._running = False
+    window._transparent = False
+    window.bridge = SimpleNamespace(
+        _detach=lambda: calls.append("detach"),
+        close=lambda: pytest.fail("WM_CLOSE must not synchronously unbind scripts"),
+    )
+    monkeypatch.setattr(
+        frameless._user32, "DestroyWindow",
+        lambda hwnd: calls.append(("destroy", hwnd)) or True,
+    )
+
+    assert window._wndproc(123, frameless._WM_CLOSE, 0, 0) == 0
+    assert calls == ["detach", ("destroy", 123)]
+    assert window.bridge is None
+
+
 def test_fixed_frameless_window_disables_resizing_and_maximize():
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123

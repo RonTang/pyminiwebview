@@ -1201,7 +1201,7 @@ class FramelessWindow:
             self._notify_maximized_state()
         elif message == _WM_CLOSE:
             if self.bridge:
-                self.bridge.close()
+                self.bridge._detach()
                 self.bridge = None
             _user32.DestroyWindow(hwnd)
             return 0
@@ -1230,7 +1230,7 @@ class FramelessWindow:
             self._finish_resize()
             _user32.ReleaseCapture()
         if self.bridge:
-            self.bridge.close()
+            self.bridge._detach()
             self.bridge = None
         if self.hwnd:
             _user32.DestroyWindow(self.hwnd)

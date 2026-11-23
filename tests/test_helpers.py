@@ -195,6 +195,18 @@ def test_close_unbinds_all_functions_and_is_idempotent():
         bridge.expose(lambda: 3, name="three")
 
 
+def test_callback_does_not_respond_after_bridge_closes():
+    view = FakeView()
+    bridge = Bridge(view)
+
+    @bridge.expose
+    def close_now():
+        bridge.close()
+
+    view.bindings["close_now"]("request", "[]")
+    assert view.returns == []
+
+
 def test_base_exception_is_not_converted_to_a_business_error():
     view = FakeView()
     bridge = Bridge(view)
@@ -336,6 +348,58 @@ def test_real_webview_bridge_success_rejection_and_call_js(tmp_path):
         "callJsReturn": "called",
         "status": "中文\"引号\"\n</script>",
     }]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires WebView2 Runtime")
+@pytest.mark.parametrize("kind", ["standalone", "frameless"])
+def test_close_from_bridge_callback_exits_run_loop(tmp_path, kind):
+    script = r"""
+import sys
+import pyminiwebview
+from pyminiwebview_helpers import Bridge
+from pyminiwebview_win32 import FramelessWindow
+
+if sys.argv[2] == "frameless":
+    host = FramelessWindow(
+        width=420, height=300, min_width=320, min_height=240,
+        user_data_folder=sys.argv[1],
+    )
+    view = host.view
+    bridge = host.bridge
+else:
+    host = pyminiwebview.WebView(
+        width=420, height=300, user_data_folder=sys.argv[1]
+    )
+    view = host
+    bridge = Bridge(view)
+
+@bridge.expose
+def close_now():
+    host.close()
+    return "closed"
+
+view.set_html(
+    "<script>document.addEventListener('DOMContentLoaded', () => close_now())</script>"
+)
+host.run()
+host.close()
+print("CLOSE_CALLBACK_OK")
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(sys.path)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "webview-data"), kind],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=20,
+        env=environment,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "CLOSE_CALLBACK_OK" in result.stdout
+    assert "Traceback" not in output
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires WebView2 Runtime")

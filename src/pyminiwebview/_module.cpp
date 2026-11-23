@@ -288,6 +288,7 @@ typedef struct {
   std::mutex *lifecycle_mutex;
   DWORD ui_thread;
   int closed;
+  int running;
 } WebViewObject;
 
 struct DispatchCall {
@@ -548,6 +549,9 @@ static int close_on_ui(WebViewObject *self) {
   webview_error_t error = destroy_native_resources(&finalizer);
   clear_pending_dispatch(self);
   Py_XDECREF(finalizer.bindings);
+  if (self->running) {
+    PostQuitMessage(0);
+  }
   if (error != WEBVIEW_ERROR_OK) {
     return set_webview_error("webview_destroy", error);
   }
@@ -1235,12 +1239,14 @@ static PyObject *WebView_run(WebViewObject *self, PyObject *args) {
     }
   }
   webview_error_t error;
+  self->running = 1;
   // The message loop blocks for an arbitrary time and never needs the GIL.
   Py_BEGIN_ALLOW_THREADS
   error = webview_run_with_accelerators(self->webview,
                                         reinterpret_cast<HWND>(hwnd),
                                         reinterpret_cast<HACCEL>(haccel));
   Py_END_ALLOW_THREADS
+  self->running = 0;
   if (check_webview_error(error, "webview_run_with_accelerators") < 0) {
     return nullptr;
   }
