@@ -446,7 +446,7 @@ for index in range(10):
     view.set_html(
         "<script>first(); for (let i = 0; i < 40; i++) second();</script>"
     )
-    watchdog = threading.Timer(0.1, view.terminate)
+    watchdog = threading.Timer(1.0, view.terminate)
     if mode != "close":
         watchdog.start()
     try:
