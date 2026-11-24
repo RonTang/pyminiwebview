@@ -1543,7 +1543,8 @@ static PyObject *WebView_js_bind(WebViewObject *self, PyObject *args) {
   }
   webview_error_t error =
       webview_bind(self->webview, name, binding_callback, call);
-  if (error != WEBVIEW_ERROR_OK) {
+  // The native binding is inserted before a canceled script refresh returns.
+  if (error != WEBVIEW_ERROR_OK && error != WEBVIEW_ERROR_CANCELED) {
     Py_DecRef(capsule);
     set_webview_error("webview_bind", error);
     return nullptr;
@@ -1588,7 +1589,8 @@ static PyObject *WebView_js_unbind(WebViewObject *self, PyObject *args) {
   Py_IncRef(callable);
   clear_reference(&call->callable);
   webview_error_t error = webview_unbind(self->webview, name);
-  if (error != WEBVIEW_ERROR_OK) {
+  // The native binding is erased before a canceled script refresh returns.
+  if (error != WEBVIEW_ERROR_OK && error != WEBVIEW_ERROR_CANCELED) {
     Py_DecRef(call->callable);
     call->callable = callable;
     Py_DecRef(capsule);
