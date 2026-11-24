@@ -21,7 +21,7 @@
 
 ## 补丁封顶原则
 
-引擎补丁仅限 `webview_create_ex`、`webview_run_with_accelerators(hwnd, haccel)`、`webview_dispatch` 这三个 API 及其必需的内部实现。`webview_run(w)` 保持上游公开签名，并转调加速键版本且传入空句柄。新需求必须放在 Python 绑定层或项目自有源码文件中，不再扩充 vendor 改动范围。不新增公开 API 的引用计数配平、异常安全和消息取消修复属于现有实现维护，仍须保持成对标记并重新导出完整补丁。
+引擎补丁仅限 `webview_create_ex`、`webview_run_with_accelerators(hwnd, haccel)`、`webview_dispatch` 这三个 API 及其必需的内部实现。`webview_run(w)` 保持上游公开签名，并转调加速键版本且传入空句柄。新需求必须放在 Python 绑定层或项目自有源码文件中，不再扩充 vendor 改动范围。不新增公开 API 的引用计数配平、异常安全和消息取消修复属于现有实现维护，仍须保持成对标记并重新导出完整补丁。初始化错误与退出状态只通过 `webview::detail` 下的内部辅助接口共享，不导出新的公开 C API。
 
 ## 补丁清单
 
@@ -33,6 +33,8 @@
    - Python 依赖：`WebView_init`。
    - 背景色不属于本补丁，由 `_module.cpp` 直接调用 WebView2 API。
    - 配平初始化取得的 Core 与 Settings COM 引用，嵌套初始化取消时保留 `WM_QUIT`。
+   - 在调用 Runtime 前创建用户数据目录，避免原生错误对话框；失败时保留完整路径与 HRESULT。
+   - 构造全程回滚半初始化资源，隔离迟到的 COM 回调并限制初始化等待时间。
 2. `webview_run_with_accelerators(hwnd, haccel)`
    - 仅为 Win32 后端增加可选加速键句柄。
    - `webview_run(w)` 恢复上游公开签名，内部以空句柄转调加速键版本；不改变其他平台的公开接口。

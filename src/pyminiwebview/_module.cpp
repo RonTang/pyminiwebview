@@ -26,6 +26,17 @@ constexpr UINT_PTR STARTUP_REVEAL_TIMER_ID = 0x504D5677;
 constexpr UINT SIGNAL_CHECK_INTERVAL_MS = 100;
 static thread_local bool initialization_signal_check_active = false;
 
+static PyObject *new_none_reference() {
+  Py_IncRef(Py_None);
+  return Py_None;
+}
+
+static void clear_reference(PyObject **object) {
+  PyObject *value = *object;
+  *object = nullptr;
+  Py_DecRef(value);
+}
+
 static void handle_ui_callback_exception() {
   if (PyErr_ExceptionMatches(PyExc_KeyboardInterrupt)) {
     PostQuitMessage(0);
@@ -364,8 +375,10 @@ static int set_webview2_error(const char *operation, HRESULT result) {
 }
 
 static void restore_initialization_quit() {
-  const int exit_code = webview_take_initialization_quit_code();
-  if (exit_code >= 0) {
+  const int exit_code = webview::detail::take_initialization_quit_code();
+  if (exit_code >= 0 &&
+      !PostThreadMessageW(GetCurrentThreadId(), WM_QUIT,
+                          static_cast<WPARAM>(exit_code), 0)) {
     PostQuitMessage(exit_code);
   }
 }
@@ -436,12 +449,12 @@ static int WebView_clear(WebViewObject *self) {
         continue;
       }
       BindingCall *call = static_cast<BindingCall *>(pointer);
-      Py_CLEAR(call->callable);
+      clear_reference(&call->callable);
     }
   }
   DispatchCall *call = self->pending_dispatch;
   while (call != nullptr) {
-    Py_CLEAR(call->callable);
+    clear_reference(&call->callable);
     call = call->next;
   }
   return 0;
@@ -457,7 +470,7 @@ static void clear_pending_dispatch(WebViewObject *self) {
   while (call != nullptr) {
     DispatchCall *next = call->next;
     call->owner = nullptr;
-    Py_CLEAR(call->callable);
+    clear_reference(&call->callable);
     delete call;
     call = next;
   }
@@ -583,7 +596,7 @@ static int close_on_ui(WebViewObject *self) {
   detach_native(self, &finalizer);
   webview_error_t error = destroy_native_resources(&finalizer);
   clear_pending_dispatch(self);
-  Py_XDECREF(finalizer.bindings);
+  Py_DecRef(finalizer.bindings);
   if (self->running) {
     PostQuitMessage(0);
   }
@@ -599,7 +612,7 @@ static void finalize_native_callback(webview_t webview, void *arg) noexcept {
       static_cast<NativeFinalizer *>(arg));
   PyGILState_STATE gil_state = PyGILState_Ensure();
   destroy_native_resources(finalizer.get());
-  Py_XDECREF(finalizer->bindings);
+  Py_DecRef(finalizer->bindings);
   PyGILState_Release(gil_state);
 }
 
@@ -853,7 +866,7 @@ static PyObject *WebView_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
       if (!PyErr_Occurred()) {
         PyErr_NoMemory();
       }
-      Py_DECREF(self);
+      Py_DecRef(reinterpret_cast<PyObject *>(self));
       return nullptr;
     }
   }
@@ -908,7 +921,7 @@ static void WebView_dealloc(WebViewObject *self) {
       }
     }
   }
-  Py_CLEAR(self->bindings);
+  clear_reference(&self->bindings);
   delete self->auto_size_state;
   delete self->lifecycle_mutex;
   PyTypeObject *type = Py_TYPE(self);
@@ -916,7 +929,7 @@ static void WebView_dealloc(WebViewObject *self) {
   if (free != nullptr) {
     free(reinterpret_cast<PyObject *>(self));
   }
-  Py_DECREF(type);
+  Py_DecRef(reinterpret_cast<PyObject *>(type));
   PyErr_Restore(error_type, error_value, error_traceback);
 }
 
@@ -1055,7 +1068,7 @@ static int WebView_init(WebViewObject *self, PyObject *args, PyObject *kwds) {
     self->initializing = 0;
     const char *message = nullptr;
     const int initialization_error =
-        webview_get_last_initialization_error(&message);
+        webview::detail::get_last_initialization_error(&message);
     if (message != nullptr && *message != '\0') {
       PyErr_Format(PyExc_RuntimeError,
                    "WebView2 initialization failed: %s (webview error %d)",
@@ -1170,7 +1183,7 @@ static PyObject *WebView_close(WebViewObject *self, PyObject *ignored) {
   if (close_on_ui(self) < 0) {
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_enter(WebViewObject *self, PyObject *ignored) {
@@ -1178,7 +1191,7 @@ static PyObject *WebView_enter(WebViewObject *self, PyObject *ignored) {
   if (require_webview(self) < 0) {
     return nullptr;
   }
-  Py_INCREF(self);
+  Py_IncRef(reinterpret_cast<PyObject *>(self));
   return reinterpret_cast<PyObject *>(self);
 }
 
@@ -1192,7 +1205,7 @@ static PyObject *WebView_exit(WebViewObject *self, PyObject *args) {
   if (close_on_ui(self) < 0) {
     return nullptr;
   }
-  Py_RETURN_FALSE;
+  return PyBool_FromLong(0);
 }
 
 static PyObject *WebView_configure_app_mode(WebViewObject *self, PyObject *args,
@@ -1219,7 +1232,7 @@ static PyObject *WebView_configure_app_mode(WebViewObject *self, PyObject *args,
                          redirect_new_window_to_system_browser) < 0) {
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_composition_resize(WebViewObject *self,
@@ -1229,10 +1242,10 @@ static PyObject *WebView_composition_resize(WebViewObject *self,
     return nullptr;
   }
   if (self->composition == nullptr) {
-    Py_RETURN_FALSE;
+    return PyBool_FromLong(0);
   }
   self->composition->resize();
-  Py_RETURN_TRUE;
+  return PyBool_FromLong(1);
 }
 
 static PyObject *WebView_composition_mouse_input(WebViewObject *self,
@@ -1248,7 +1261,7 @@ static PyObject *WebView_composition_mouse_input(WebViewObject *self,
     return nullptr;
   }
   if (self->composition == nullptr) {
-    Py_RETURN_FALSE;
+    return PyBool_FromLong(0);
   }
   return PyBool_FromLong(self->composition->send_mouse_input(
       message, static_cast<WPARAM>(wparam), static_cast<LPARAM>(lparam)));
@@ -1266,7 +1279,7 @@ static PyObject *WebView_composition_pointer_input(WebViewObject *self,
     return nullptr;
   }
   if (self->composition == nullptr) {
-    Py_RETURN_FALSE;
+    return PyBool_FromLong(0);
   }
   return PyBool_FromLong(self->composition->send_pointer_input(
       message, static_cast<WPARAM>(wparam)));
@@ -1279,7 +1292,7 @@ static PyObject *WebView_composition_cursor(WebViewObject *self,
     return nullptr;
   }
   if (self->composition == nullptr) {
-    Py_RETURN_FALSE;
+    return PyBool_FromLong(0);
   }
   return PyBool_FromLong(self->composition->update_cursor());
 }
@@ -1294,10 +1307,10 @@ static PyObject *WebView_composition_visible(WebViewObject *self,
     return nullptr;
   }
   if (self->composition == nullptr) {
-    Py_RETURN_FALSE;
+    return PyBool_FromLong(0);
   }
   self->composition->set_visible(visible ? TRUE : FALSE);
-  Py_RETURN_TRUE;
+  return PyBool_FromLong(1);
 }
 
 static PyObject *WebView_notify_parent_position(WebViewObject *self,
@@ -1321,7 +1334,7 @@ static PyObject *WebView_notify_parent_position(WebViewObject *self,
                  static_cast<unsigned long>(result));
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_run(WebViewObject *self, PyObject *args) {
@@ -1358,7 +1371,7 @@ static PyObject *WebView_run(WebViewObject *self, PyObject *args) {
   if (check_webview_error(error, "webview_run_with_accelerators") < 0) {
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_terminate(WebViewObject *self, PyObject *ignored) {
@@ -1376,7 +1389,7 @@ static PyObject *WebView_terminate(WebViewObject *self, PyObject *ignored) {
   if (check_webview_error(error, "webview_terminate") < 0) {
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static void dispatch_callback(webview_t webview, void *arg) noexcept {
@@ -1404,10 +1417,10 @@ static void dispatch_callback(webview_t webview, void *arg) noexcept {
     if (result == nullptr) {
       handle_ui_callback_exception();
     } else {
-      Py_DECREF(result);
+      Py_DecRef(result);
     }
   }
-  Py_XDECREF(callable);
+  Py_DecRef(callable);
   PyGILState_Release(gil_state);
 }
 
@@ -1420,7 +1433,7 @@ static PyObject *WebView_dispatch(WebViewObject *self, PyObject *callable) {
   if (call == nullptr) {
     return PyErr_NoMemory();
   }
-  Py_INCREF(callable);
+  Py_IncRef(callable);
   webview_error_t error = WEBVIEW_ERROR_OK;
   bool unavailable = false;
   {
@@ -1436,18 +1449,18 @@ static PyObject *WebView_dispatch(WebViewObject *self, PyObject *callable) {
     }
   }
   if (unavailable) {
-    Py_DECREF(callable);
+    Py_DecRef(callable);
     delete call;
     PyErr_SetString(PyExc_RuntimeError, "WebView is not initialized or is closed");
     return nullptr;
   }
   if (error != WEBVIEW_ERROR_OK) {
-    Py_DECREF(callable);
+    Py_DecRef(callable);
     delete call;
     set_webview_error("webview_dispatch", error);
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 
@@ -1459,7 +1472,7 @@ static void binding_call_destructor(PyObject *capsule) {
     return;
   }
   BindingCall *call = static_cast<BindingCall *>(pointer);
-  Py_XDECREF(call->callable);
+  Py_DecRef(call->callable);
   if (!call->release_queued) {
     delete call;
   }
@@ -1469,7 +1482,7 @@ static void binding_call_release(webview_t webview, void *arg) noexcept {
   (void)webview;
   std::unique_ptr<BindingCall> call(static_cast<BindingCall *>(arg));
   PyGILState_STATE gil_state = PyGILState_Ensure();
-  Py_XDECREF(call->callable);
+  Py_DecRef(call->callable);
   PyGILState_Release(gil_state);
 }
 
@@ -1488,15 +1501,15 @@ static void binding_callback(const char *id, const char *request,
   } else {
     // Keep a local reference in case the callback unbinds the Python callable.
     PyObject *callable = call->callable;
-    Py_INCREF(callable);
+    Py_IncRef(callable);
     PyObject *result = PyObject_CallObject(callable, arguments);
-    Py_DECREF(arguments);
+    Py_DecRef(arguments);
     if (result == nullptr) {
       handle_ui_callback_exception();
     } else {
-      Py_DECREF(result);
+      Py_DecRef(result);
     }
-    Py_DECREF(callable);
+    Py_DecRef(callable);
   }
   PyGILState_Release(gil_state);
 }
@@ -1521,28 +1534,28 @@ static PyObject *WebView_js_bind(WebViewObject *self, PyObject *args) {
   } catch (const std::bad_alloc &) {
     return PyErr_NoMemory();
   }
-  Py_INCREF(callable);
+  Py_IncRef(callable);
   PyObject *capsule = PyCapsule_New(call, nullptr, binding_call_destructor);
   if (capsule == nullptr) {
-    Py_DECREF(callable);
+    Py_DecRef(callable);
     delete call;
     return nullptr;
   }
   webview_error_t error =
       webview_bind(self->webview, name, binding_callback, call);
   if (error != WEBVIEW_ERROR_OK) {
-    Py_DECREF(capsule);
+    Py_DecRef(capsule);
     set_webview_error("webview_bind", error);
     return nullptr;
   }
   // Ownership transfers to the release callback after a successful unbind.
   if (PyDict_SetItemString(self->bindings, name, capsule) < 0) {
     webview_unbind(self->webview, name);
-    Py_DECREF(capsule);
+    Py_DecRef(capsule);
     return nullptr;
   }
-  Py_DECREF(capsule);
-  Py_RETURN_NONE;
+  Py_DecRef(capsule);
+  return new_none_reference();
 }
 
 static PyObject *WebView_js_unbind(WebViewObject *self, PyObject *args) {
@@ -1562,23 +1575,23 @@ static PyObject *WebView_js_unbind(WebViewObject *self, PyObject *args) {
     if (PyDict_DelItemString(self->bindings, name) < 0) {
       return nullptr;
     }
-    Py_RETURN_NONE;
+    return new_none_reference();
   }
-  Py_INCREF(capsule);
+  Py_IncRef(capsule);
   BindingCall *call =
       static_cast<BindingCall *>(PyCapsule_GetPointer(capsule, nullptr));
   if (call == nullptr) {
-    Py_DECREF(capsule);
+    Py_DecRef(capsule);
     return nullptr;
   }
   PyObject *callable = call->callable;
-  Py_XINCREF(callable);
-  Py_CLEAR(call->callable);
+  Py_IncRef(callable);
+  clear_reference(&call->callable);
   webview_error_t error = webview_unbind(self->webview, name);
   if (error != WEBVIEW_ERROR_OK) {
-    Py_XDECREF(call->callable);
+    Py_DecRef(call->callable);
     call->callable = callable;
-    Py_DECREF(capsule);
+    Py_DecRef(capsule);
     set_webview_error("webview_unbind", error);
     return nullptr;
   }
@@ -1586,11 +1599,13 @@ static PyObject *WebView_js_unbind(WebViewObject *self, PyObject *args) {
               ? WEBVIEW_ERROR_INVALID_STATE
               : webview_dispatch(self->webview, binding_call_release, call);
   if (error != WEBVIEW_ERROR_OK) {
-    Py_XDECREF(callable);
-    if (PyDict_GetItemString(self->bindings, name) == capsule) {
-      Py_DECREF(capsule);
+    if (PyDict_GetItemString(self->bindings, name) == capsule &&
+        PyDict_DelItemString(self->bindings, name) < 0) {
+      PyErr_Clear();
     }
-    // Otherwise retain the local capsule reference; queued calls may still exist.
+    Py_DecRef(callable);
+    // Native calls already queued by unbind may still retain this pointer.
+    // Abandon the local capsule reference rather than risking an early delete.
     set_webview_error("webview_dispatch binding release", error);
     return nullptr;
   }
@@ -1599,9 +1614,9 @@ static PyObject *WebView_js_unbind(WebViewObject *self, PyObject *args) {
       PyDict_DelItemString(self->bindings, name) < 0) {
     PyErr_Clear();
   }
-  Py_DECREF(capsule);
-  Py_XDECREF(callable);
-  Py_RETURN_NONE;
+  Py_DecRef(capsule);
+  Py_DecRef(callable);
+  return new_none_reference();
 }
 
 static PyObject *WebView_js_return(WebViewObject *self, PyObject *args) {
@@ -1616,7 +1631,7 @@ static PyObject *WebView_js_return(WebViewObject *self, PyObject *args) {
                           "webview_return") < 0) {
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_js_eval(WebViewObject *self, PyObject *args) {
@@ -1628,7 +1643,7 @@ static PyObject *WebView_js_eval(WebViewObject *self, PyObject *args) {
       check_webview_error(webview_eval(self->webview, js), "webview_eval") < 0) {
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_js_init(WebViewObject *self, PyObject *args) {
@@ -1640,7 +1655,7 @@ static PyObject *WebView_js_init(WebViewObject *self, PyObject *args) {
       check_webview_error(webview_init(self->webview, js), "webview_init") < 0) {
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_navigate(WebViewObject *self, PyObject *args) {
@@ -1654,7 +1669,7 @@ static PyObject *WebView_navigate(WebViewObject *self, PyObject *args) {
     return nullptr;
   }
   self->content_requested = 1;
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_set_html(WebViewObject *self, PyObject *args) {
@@ -1668,7 +1683,7 @@ static PyObject *WebView_set_html(WebViewObject *self, PyObject *args) {
     return nullptr;
   }
   self->content_requested = 1;
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_set_title(WebViewObject *self, PyObject *args) {
@@ -1688,7 +1703,7 @@ static PyObject *WebView_set_title(WebViewObject *self, PyObject *args) {
                           "webview_set_title") < 0) {
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_set_size(WebViewObject *self, PyObject *args) {
@@ -1720,7 +1735,7 @@ static PyObject *WebView_set_size(WebViewObject *self, PyObject *args) {
                  "webview_set_size") < 0) {
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_set_focus(WebViewObject *self, PyObject *ignored) {
@@ -1728,7 +1743,7 @@ static PyObject *WebView_set_focus(WebViewObject *self, PyObject *ignored) {
   if (require_webview(self) < 0 || focus_webview(self) < 0) {
     return nullptr;
   }
-  Py_RETURN_NONE;
+  return new_none_reference();
 }
 
 static PyObject *WebView_get_native_handle(WebViewObject *self, PyObject *args) {
@@ -1846,12 +1861,12 @@ PyMODINIT_FUNC PyInit_pyminiwebview(void) {
   }
   PyObject *type = PyType_FromSpec(&WebView_spec);
   if (type == nullptr) {
-    Py_DECREF(module);
+    Py_DecRef(module);
     return nullptr;
   }
   if (PyModule_AddObject(module, "WebView", type) < 0) {
-    Py_DECREF(type);
-    Py_DECREF(module);
+    Py_DecRef(reinterpret_cast<PyObject *>(type));
+    Py_DecRef(module);
     return nullptr;
   }
   if (add_constant(module, "HINT_NONE", WEBVIEW_HINT_NONE) < 0 ||
@@ -1865,7 +1880,7 @@ PyMODINIT_FUNC PyInit_pyminiwebview(void) {
       add_constant(module, "NATIVE_HANDLE_KIND_BROWSER_CONTROLLER",
                    WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER) < 0 ||
       PyModule_AddStringConstant(module, "__version__", PYMINIWEBVIEW_VERSION) < 0) {
-    Py_DECREF(module);
+    Py_DecRef(module);
     return nullptr;
   }
   return module;

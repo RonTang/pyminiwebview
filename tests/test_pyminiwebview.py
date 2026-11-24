@@ -188,11 +188,43 @@ def test_initialization_reposts_quit_for_outer_message_loop(
     script = r"""
 import ctypes
 import sys
+import time
 from ctypes import wintypes
 import pyminiwebview
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 user32.PostQuitMessage.argtypes = [ctypes.c_int]
+user32.PostThreadMessageW.argtypes = [
+    wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+]
+user32.PostThreadMessageW.restype = wintypes.BOOL
+user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+user32.FindWindowW.restype = wintypes.HWND
+user32.FindWindowExW.argtypes = [
+    wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
+]
+user32.FindWindowExW.restype = wintypes.HWND
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = ctypes.c_long
+HOOKPROC = ctypes.WINFUNCTYPE(
+    ctypes.c_ssize_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t
+)
+user32.SetWindowsHookExW.argtypes = [
+    ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD,
+]
+user32.SetWindowsHookExW.restype = wintypes.HHOOK
+user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
+user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+user32.CallNextHookEx.argtypes = [
+    wintypes.HHOOK, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t,
+]
+user32.CallNextHookEx.restype = ctypes.c_ssize_t
+user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.DispatchMessageW.restype = ctypes.c_ssize_t
 user32.PeekMessageW.argtypes = [
     ctypes.POINTER(wintypes.MSG), wintypes.HWND,
     wintypes.UINT, wintypes.UINT, wintypes.UINT,
@@ -255,31 +287,93 @@ if composition:
     )
     assert host
 
+def check_quit(index, expected_code):
+    message = wintypes.MSG()
+    assert user32.PeekMessageW(
+        ctypes.byref(message), None, 0x0012, 0x0012, 1
+    ), (index, expected_code)
+    assert message.message == 0x0012
+    assert message.wParam == expected_code, (
+        index, message.wParam, expected_code
+    )
+
+
+def pump_late_callbacks():
+    deadline = time.monotonic() + 0.25
+    message = wintypes.MSG()
+    while time.monotonic() < deadline:
+        if user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
+            assert message.message != 0x0012
+            user32.TranslateMessage(ctypes.byref(message))
+            user32.DispatchMessageW(ctypes.byref(message))
+        else:
+            time.sleep(0.01)
+
+
 try:
+    ui_thread_id = kernel32.GetCurrentThreadId()
     for index in range(6):
         quit_code = 37 + index
-        user32.PostQuitMessage(quit_code)
+        cancel_errors = []
+        marker_message = 0x8000 + 77
+
+        @HOOKPROC
+        def cancel_at_native_wait(code, wparam, lparam):
+            if code >= 0 and wparam == 1:
+                message = wintypes.MSG.from_address(lparam)
+                if message.message == marker_message:
+                    regular_ready = True
+                    if composition:
+                        widget = user32.FindWindowExW(
+                            host, None, "webview_widget", None
+                        )
+                        regular_ready = widget and bool(
+                            user32.GetWindowLongW(widget, -16) & 0x10000000
+                        )
+                    if regular_ready:
+                        user32.PostQuitMessage(quit_code)
+                    elif not user32.PostThreadMessageW(
+                            ui_thread_id, marker_message, 0, 0):
+                        cancel_errors.append(
+                            ctypes.WinError(ctypes.get_last_error())
+                        )
+            return user32.CallNextHookEx(None, code, wparam, lparam)
+
+        hook = user32.SetWindowsHookExW(
+            3, cancel_at_native_wait, None, ui_thread_id
+        )
+        assert hook
+        assert user32.PostThreadMessageW(ui_thread_id, marker_message, 0, 0)
         try:
             pyminiwebview.WebView(
                 window=host or 0,
                 composition_hosting=composition,
                 user_data_folder=f"{sys.argv[1]}-{index}",
             )
-        except RuntimeError:
-            pass
+        except RuntimeError as error:
+            assert "initialization failed" in str(error), str(error)
+            assert "webview error -4" in str(error), str(error)
         else:
-            raise AssertionError("WM_QUIT must cancel WebView initialization")
-        message = wintypes.MSG()
-        assert user32.PeekMessageW(
-            ctypes.byref(message), None, 0x0012, 0x0012, 1
-        ), (index, quit_code)
-        assert message.message == 0x0012
-        assert message.wParam == quit_code, (index, message.wParam, quit_code)
+            raise AssertionError("WM_QUIT must cancel native WebView initialization")
+        finally:
+            user32.UnhookWindowsHookEx(hook)
+        assert not cancel_errors
+        check_quit(index, quit_code)
+        pump_late_callbacks()
+        user32.PostQuitMessage(quit_code)
+        check_quit(index, quit_code)
+
+    view = pyminiwebview.WebView(
+        window=host or 0,
+        composition_hosting=composition,
+        user_data_folder=f"{sys.argv[1]}-valid",
+    )
+    view.close()
 finally:
     if host:
         user32.DestroyWindow(host)
         user32.UnregisterClassW(class_name, kernel32.GetModuleHandleW(None))
-print("quit preserved")
+print("native quit and late callbacks preserved")
 """
     environment = os.environ.copy()
     source_dir = str(Path(__file__).resolve().parent.parent / "src")
@@ -296,10 +390,136 @@ print("quit preserved")
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=30,
+        timeout=90,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "quit preserved" in result.stdout
+    assert "native quit and late callbacks preserved" in result.stdout
+
+
+@pytest.mark.parametrize("failing_class", ["webview_widget", "webview_message"])
+def test_constructor_failure_rolls_back_windows_and_allows_retry(
+        tmp_path, failing_class):
+    script = r"""
+import ctypes
+import sys
+from ctypes import wintypes
+import pyminiwebview
+
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+LONG_PTR = ctypes.c_ssize_t
+WNDPROC = ctypes.WINFUNCTYPE(
+    LONG_PTR, wintypes.HWND, wintypes.UINT, ctypes.c_size_t, LONG_PTR
+)
+HOOKPROC = ctypes.WINFUNCTYPE(
+    LONG_PTR, ctypes.c_int, ctypes.c_size_t, LONG_PTR
+)
+
+
+class WNDCLASSW(ctypes.Structure):
+    _fields_ = [
+        ("style", wintypes.UINT), ("lpfnWndProc", WNDPROC),
+        ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+        ("hInstance", wintypes.HINSTANCE), ("hIcon", wintypes.HICON),
+        ("hCursor", wintypes.HANDLE), ("hbrBackground", wintypes.HBRUSH),
+        ("lpszMenuName", wintypes.LPCWSTR),
+        ("lpszClassName", wintypes.LPCWSTR),
+    ]
+
+
+user32.DefWindowProcW.argtypes = [
+    wintypes.HWND, wintypes.UINT, ctypes.c_size_t, LONG_PTR,
+]
+user32.DefWindowProcW.restype = LONG_PTR
+user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
+user32.RegisterClassW.restype = wintypes.ATOM
+user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+user32.UnregisterClassW.restype = wintypes.BOOL
+user32.IsWindow.argtypes = [wintypes.HWND]
+user32.IsWindow.restype = wintypes.BOOL
+user32.SetWindowsHookExW.argtypes = [
+    ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD,
+]
+user32.SetWindowsHookExW.restype = wintypes.HHOOK
+user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
+user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+user32.CallNextHookEx.argtypes = [
+    wintypes.HHOOK, ctypes.c_int, ctypes.c_size_t, LONG_PTR,
+]
+user32.CallNextHookEx.restype = LONG_PTR
+kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
+kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+instance_handle = kernel32.GetModuleHandleW(None)
+created_windows = []
+
+
+@WNDPROC
+def fail_window_create(hwnd, message, wparam, lparam):
+    if message == 0x0081:
+        return 0
+    return user32.DefWindowProcW(hwnd, message, wparam, lparam)
+
+
+@HOOKPROC
+def record_window_create(code, wparam, lparam):
+    if code == 3:
+        created_windows.append(wparam)
+    return user32.CallNextHookEx(None, code, wparam, lparam)
+
+
+failing_class = sys.argv[2]
+window_class = WNDCLASSW()
+window_class.lpfnWndProc = fail_window_create
+window_class.hInstance = instance_handle
+window_class.lpszClassName = failing_class
+assert user32.RegisterClassW(ctypes.byref(window_class))
+hook = user32.SetWindowsHookExW(
+    5, record_window_create, None, kernel32.GetCurrentThreadId()
+)
+assert hook
+view = pyminiwebview.WebView.__new__(pyminiwebview.WebView)
+initialized = False
+try:
+    try:
+        view.__init__(user_data_folder=f"{sys.argv[1]}-failed")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("injected window creation failure must fail init")
+    user32.UnhookWindowsHookEx(hook)
+    hook = None
+    assert created_windows
+    assert all(not user32.IsWindow(hwnd) for hwnd in created_windows), (
+        failing_class, created_windows
+    )
+    assert user32.UnregisterClassW(failing_class, instance_handle)
+    view.__init__(user_data_folder=f"{sys.argv[1]}-retry")
+    initialized = True
+    view.close()
+finally:
+    if hook:
+        user32.UnhookWindowsHookEx(hook)
+    if initialized:
+        view.close()
+print("constructor rollback preserved")
+"""
+    environment = os.environ.copy()
+    source_dir = str(Path(__file__).resolve().parent.parent / "src")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [source_dir, environment.get("PYTHONPATH")])
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), failing_class],
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "constructor rollback preserved" in result.stdout
 
 
 def test_bind_navigate_destroy_refcount_is_stable(webview):
@@ -309,6 +529,7 @@ def test_bind_navigate_destroy_refcount_is_stable(webview):
         calls.append((request_id, request))
 
     baseline = sys.getrefcount(callback)
+    none_baseline = sys.getrefcount(None)
     for _ in range(1000):
         webview.js_bind("fromPythonTests", callback)
         assert sys.getrefcount(callback) == baseline + 1
@@ -318,6 +539,7 @@ def test_bind_navigate_destroy_refcount_is_stable(webview):
     webview.navigate("data:text/html,%3Cp%3Enavigation%3C%2Fp%3E")
     webview.set_html("<p>done</p>")
     assert sys.getrefcount(callback) == baseline
+    assert abs(sys.getrefcount(None) - none_baseline) < 100
 
 
 def test_javascript_callback_and_return(webview):
@@ -589,6 +811,17 @@ def test_invalid_arguments_raise_python_exceptions(webview, tmp_path):
         webview.get_native_handle(999)
     with pytest.raises(TypeError):
         webview.dispatch(42)
+
+
+def test_user_data_folder_failure_reports_path_and_native_error(tmp_path):
+    blocking_file = tmp_path / "not-a-directory"
+    blocking_file.write_text("blocked", encoding="utf-8")
+    data_folder = blocking_file / "EBwebview"
+    with pytest.raises(RuntimeError) as error:
+        pyminiwebview.WebView(user_data_folder=str(data_folder))
+    message = str(error.value)
+    assert str(data_folder) in message
+    assert "HRESULT" in message
 
 
 def test_run_parses_64_bit_hwnd(webview):

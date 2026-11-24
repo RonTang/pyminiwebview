@@ -498,9 +498,8 @@ private:
         if (result <= 0) {
           KillTimer(nullptr, wake_timer);
           if (result == 0) {
-            webview_note_initialization_quit(
+            webview::detail::note_initialization_quit(
                 static_cast<int>(message.wParam));
-            PostQuitMessage(static_cast<int>(message.wParam));
             throw webview::exception{
                 WEBVIEW_ERROR_CANCELED,
                 "Composition WebView2 initialization canceled"};
@@ -548,18 +547,29 @@ private:
     auto state = std::make_shared<CompositionCreateState>();
     auto *handler = new CompositionCreateHandler{
         [state](HRESULT result, ICoreWebView2CompositionController *controller) {
-          std::lock_guard<std::mutex> lock(state->mutex);
-          if (state->cancelled) {
-            return;
+          {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (!state->cancelled) {
+              state->completion = result;
+              if (SUCCEEDED(result) && controller != nullptr) {
+                controller->AddRef();
+                state->controller = controller;
+              } else if (SUCCEEDED(result)) {
+                state->completion = E_FAIL;
+              }
+              state->done = true;
+              return;
+            }
           }
-          state->completion = result;
-          if (SUCCEEDED(result) && controller != nullptr) {
-            controller->AddRef();
-            state->controller = controller;
-          } else if (SUCCEEDED(result)) {
-            state->completion = E_FAIL;
+          if (controller != nullptr) {
+            ICoreWebView2Controller *owned_controller = nullptr;
+            if (SUCCEEDED(controller->QueryInterface(
+                    IID_PPV_ARGS(&owned_controller))) &&
+                owned_controller != nullptr) {
+              owned_controller->Close();
+              owned_controller->Release();
+            }
           }
-          state->done = true;
         }};
     HRESULT create_result = m_environment->CreateCoreWebView2CompositionController(
         m_host, handler);
