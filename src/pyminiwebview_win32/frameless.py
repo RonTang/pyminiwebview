@@ -848,6 +848,8 @@ class FramelessWindow:
         self._class_atom = self._register_window_class(
             self._class_name, self._wndproc_ref, self._background_brush
         )
+        # UnregisterClassW deletes the class background brush.
+        self._background_brush = None
 
         work_area = wintypes.RECT()
         if not _user32.SystemParametersInfoW(

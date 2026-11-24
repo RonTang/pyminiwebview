@@ -140,6 +140,7 @@ def test_frameless_window_owns_webview_controls_and_first_frame(tmp_path):
             "__window_ready",
         } <= set(window.bridge._names)
         assert window._frame == "normal"
+        assert window._background_brush is None
         initial_rect = wintypes.RECT()
         assert user32.GetWindowRect(hwnd, ctypes.byref(initial_rect))
         initial_dpi = frameless._window_dpi(hwnd)
@@ -363,7 +364,7 @@ def make_frameless_close_fixture():
     window._class_name = "FramelessClass"
     window._overlay_class_atom = 22
     window._overlay_class_name = "OverlayClass"
-    window._background_brush = 33
+    window._background_brush = None
     window._hinstance = 44
     return window
 
@@ -396,7 +397,7 @@ def test_frameless_close_destroy_failure_preserves_window_and_allows_retry(
     assert window.bridge is bridge
     assert window._class_atom == 11
     assert window._overlay_class_atom == 22
-    assert window._background_brush == 33
+    assert window._background_brush is None
     assert "Win32 error 5" in caplog.text
 
     monkeypatch.setattr(
@@ -404,7 +405,10 @@ def test_frameless_close_destroy_failure_preserves_window_and_allows_retry(
         lambda hwnd: destroy_calls.append(hwnd) or True,
     )
     monkeypatch.setattr(frameless._user32, "UnregisterClassW", lambda *_args: True)
-    monkeypatch.setattr(frameless._gdi32, "DeleteObject", lambda _handle: True)
+    monkeypatch.setattr(
+        frameless._gdi32, "DeleteObject",
+        lambda *_args: pytest.fail("the class owns its background brush"),
+    )
     window.close()
     window.close()
     assert destroy_calls == [123, 123]
@@ -437,12 +441,15 @@ def test_frameless_close_unregister_failure_preserves_state_for_retry(
         return True
 
     monkeypatch.setattr(frameless._user32, "UnregisterClassW", unregister)
-    monkeypatch.setattr(frameless._gdi32, "DeleteObject", lambda _handle: True)
+    monkeypatch.setattr(
+        frameless._gdi32, "DeleteObject",
+        lambda *_args: pytest.fail("UnregisterClassW owns brush deletion"),
+    )
     monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 1410)
     with caplog.at_level("WARNING", logger="pyminiwebview_win32.frameless"):
         window.close()
         assert getattr(window, failed_atom) is not None
-        assert window._background_brush == 33
+        assert window._background_brush is None
         window.close()
 
     assert getattr(window, failed_atom) is None
@@ -453,10 +460,13 @@ def test_frameless_close_unregister_failure_preserves_state_for_retry(
     assert len(unregister_calls) == 3
 
 
-def test_frameless_close_brush_failure_preserves_handle_for_retry(
+def test_frameless_close_unregistered_brush_failure_preserves_handle_for_retry(
         monkeypatch, caplog):
     window = make_frameless_close_fixture()
     window.hwnd = None
+    window._class_atom = None
+    window._overlay_class_atom = None
+    window._background_brush = 33
     delete_calls = []
     monkeypatch.setattr(frameless._user32, "UnregisterClassW", lambda *_args: True)
     monkeypatch.setattr(
