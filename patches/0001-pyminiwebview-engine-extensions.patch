@@ -1,4 +1,3 @@
-diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
 --- a/vendor/webview/webview.h
 +++ b/vendor/webview/webview.h
 @@ -239,6 +239,15 @@
@@ -212,7 +211,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
    unsigned int m_max_attempts = 5;
    unsigned int m_attempts = 0;
  };
-@@ -3781,9 +3880,44 @@
+@@ -3781,9 +3880,58 @@
    std::wstring m_code;
  };
  
@@ -239,6 +238,20 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
 +  }
 +  return static_cast<int>(initialization_error);
 +}
++
++static thread_local bool binding_script_update_timed_out = false;
++
++static void reset_binding_script_update_status() {
++  binding_script_update_timed_out = false;
++}
++
++static void note_binding_script_update_timeout() {
++  binding_script_update_timed_out = true;
++}
++
++static bool did_binding_script_update_time_out() {
++  return binding_script_update_timed_out;
++}
 +// ==== pyminiwebview patch end ====
 +
  class win32_edge_engine : public engine_base {
@@ -258,7 +271,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
      if (!is_webview2_available()) {
        throw exception{WEBVIEW_ERROR_MISSING_DEPENDENCY,
                        "WebView2 is unavailable"};
-@@ -3791,8 +3925,12 @@
+@@ -3791,8 +3939,12 @@
  
      HINSTANCE hInstance = GetModuleHandle(nullptr);
  
@@ -272,7 +285,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
        enable_dpi_awareness();
  
        HICON icon = (HICON)LoadImage(
-@@ -3965,13 +4103,22 @@
+@@ -3965,13 +4117,22 @@
          return DefWindowProcW(hwnd, msg, wp, lp);
        }
  
@@ -296,7 +309,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
        case WM_DESTROY:
          w->m_message_window = nullptr;
          SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-@@ -3979,6 +4126,7 @@
+@@ -3979,6 +4140,7 @@
        default:
          return DefWindowProcW(hwnd, msg, wp, lp);
        }
@@ -304,7 +317,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
        return 0;
      });
      RegisterClassExW(&message_wc);
-@@ -3997,57 +4145,30 @@
+@@ -3997,57 +4159,30 @@
      auto cb =
          std::bind(&win32_edge_engine::on_message, this, std::placeholders::_1);
  
@@ -383,7 +396,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
  
    win32_edge_engine(const win32_edge_engine &other) = delete;
    win32_edge_engine &operator=(const win32_edge_engine &other) = delete;
-@@ -4055,14 +4176,11 @@
+@@ -4055,14 +4190,11 @@
    win32_edge_engine &operator=(win32_edge_engine &&other) = delete;
  
  protected:
@@ -403,7 +416,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
    result<void *> window_impl() override {
      if (m_window) {
        return m_window;
-@@ -4081,14 +4199,32 @@
+@@ -4081,14 +4213,32 @@
      }
      return error_info{WEBVIEW_ERROR_INVALID_STATE};
    }
@@ -438,7 +451,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
  
    noresult set_title_impl(const std::string &title) override {
      SetWindowTextW(m_window, widen_string(title).c_str());
-@@ -4144,27 +4280,87 @@
+@@ -4144,27 +4294,97 @@
    }
  
    user_script add_user_script_impl(const std::string &js) override {
@@ -504,6 +517,11 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
 +        const BOOL wait_result = GetMessageW(&msg, nullptr, 0, 0);
 +        if (wait_result <= 0) {
 +          if (wait_result == 0) {
++// ==== pyminiwebview patch begin ====
++// webview_bind/webview_unbind: preserve application cancellation semantics.
++// Dependency: WebView_js_bind/WebView_js_unbind in _module.cpp.
++            reset_binding_script_update_status();
++// ==== pyminiwebview patch end ====
 +            initialization_quit_code = static_cast<int>(msg.wParam);
 +            PostQuitMessage(initialization_quit_code);
 +          }
@@ -516,6 +534,11 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
 +        if (msg.message == WM_TIMER && msg.hwnd == nullptr &&
 +            msg.wParam == wake_timer) {
 +          if (GetTickCount64() >= deadline) {
++// ==== pyminiwebview patch begin ====
++// webview_bind/webview_unbind: report timeout separately from cancellation.
++// Dependency: WebView_js_bind/WebView_js_unbind in _module.cpp.
++            note_binding_script_update_timeout();
++// ==== pyminiwebview patch end ====
 +            throw exception{WEBVIEW_ERROR_CANCELED,
 +                            "WebView2 user script creation timed out"};
 +          }
@@ -542,7 +565,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
    }
  
    void
-@@ -4183,21 +4379,109 @@
+@@ -4183,21 +4403,109 @@
    }
  
  private:
@@ -663,7 +686,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
  
      m_com_handler = new webview2_com_handler(
          wnd, cb,
-@@ -4211,30 +4495,82 @@
+@@ -4211,30 +4519,82 @@
            m_controller = controller;
            m_webview = webview;
            flag.clear();
@@ -752,7 +775,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
      }
      ICoreWebView2Settings *settings = nullptr;
      auto res = m_webview->get_Settings(&settings);
-@@ -4243,10 +4579,20 @@
+@@ -4243,10 +4603,20 @@
      }
      res = settings->put_AreDevToolsEnabled(debug ? TRUE : FALSE);
      if (res != S_OK) {
@@ -773,7 +796,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
      if (res != S_OK) {
        return error_info{WEBVIEW_ERROR_UNSPECIFIED,
                          "put_IsStatusBarEnabled failed"};
-@@ -4331,18 +4677,24 @@
+@@ -4331,18 +4701,24 @@
      }
    }
  
@@ -805,7 +828,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
  
    // The app is expected to call CoInitializeEx before
    // CreateCoreWebView2EnvironmentWithOptions.
-@@ -4400,6 +4752,35 @@
+@@ -4400,6 +4776,35 @@
    return nullptr;
  }
  
@@ -841,7 +864,7 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
  WEBVIEW_API webview_error_t webview_destroy(webview_t w) {
    using namespace webview::detail;
    return api_filter([=]() -> webview::noresult {
-@@ -4409,9 +4790,21 @@
+@@ -4409,9 +4814,21 @@
  }
  
  WEBVIEW_API webview_error_t webview_run(webview_t w) {
@@ -864,3 +887,26 @@ diff --git a/vendor/webview/webview.h b/vendor/webview/webview.h
  
  WEBVIEW_API webview_error_t webview_terminate(webview_t w) {
    using namespace webview::detail;
+@@ -4520,6 +4937,11 @@
+   if (!name || !fn) {
+     return WEBVIEW_ERROR_INVALID_ARGUMENT;
+   }
++// ==== pyminiwebview patch begin ====
++// webview_bind: distinguish script timeout from application cancellation.
++// Dependency: WebView_js_bind in src/pyminiwebview/_module.cpp.
++  reset_binding_script_update_status();
++// ==== pyminiwebview patch end ====
+   return api_filter([=] {
+     return cast_to_webview(w)->bind(
+         name,
+@@ -4535,6 +4957,11 @@
+   if (!name) {
+     return WEBVIEW_ERROR_INVALID_ARGUMENT;
+   }
++// ==== pyminiwebview patch begin ====
++// webview_unbind: distinguish script timeout from application cancellation.
++// Dependency: WebView_js_unbind in src/pyminiwebview/_module.cpp.
++  reset_binding_script_update_status();
++// ==== pyminiwebview patch end ====
+   return api_filter([=] { return cast_to_webview(w)->unbind(name); });
+ }

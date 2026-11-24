@@ -1,4 +1,5 @@
 import ctypes
+import logging
 import math
 import sys
 import time
@@ -208,6 +209,13 @@ _user32 = ctypes.WinDLL("user32", use_last_error=True)
 _gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+try:
+    _shcore = ctypes.WinDLL("shcore", use_last_error=True)
+    _shcore.SetProcessDpiAwareness.argtypes = [ctypes.c_int]
+    _shcore.SetProcessDpiAwareness.restype = ctypes.c_long
+except (AttributeError, OSError):
+    _shcore = None
+_logger = logging.getLogger(__name__)
 
 _user32.DefWindowProcW.argtypes = [
     wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
@@ -349,7 +357,9 @@ def _enable_dpi_awareness():
     if error != _ERROR_ACCESS_DENIED:
         raise ctypes.WinError(error)
     try:
-        result = ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        result = (
+            _shcore.SetProcessDpiAwareness(2) if _shcore is not None else -1
+        )
     except (AttributeError, OSError):
         result = -1
     if result != 0 and not _is_per_monitor_v2():
@@ -1254,22 +1264,50 @@ class FramelessWindow:
         if self._resize_direction:
             self._finish_resize()
             _user32.ReleaseCapture()
+        if self.hwnd:
+            ctypes.set_last_error(0)
+            if not _user32.DestroyWindow(self.hwnd):
+                _logger.warning(
+                    "FramelessWindow destruction failed (Win32 error %s)",
+                    ctypes.get_last_error(),
+                )
+                return
+            self.hwnd = None
+            self._resize_overlays.clear()
         if self.bridge:
             self.bridge._detach()
             self.bridge = None
-        if self.hwnd:
-            _user32.DestroyWindow(self.hwnd)
         if self.view:
             self.view.close()
             self.view = None
         self._widget = None
         self.ready = False
         if self._class_atom:
-            _user32.UnregisterClassW(self._class_name, self._hinstance)
+            ctypes.set_last_error(0)
+            if not _user32.UnregisterClassW(self._class_name, self._hinstance):
+                _logger.warning(
+                    "FramelessWindow class unregistration failed (Win32 error %s)",
+                    ctypes.get_last_error(),
+                )
+                return
             self._class_atom = None
         if self._overlay_class_atom:
-            _user32.UnregisterClassW(self._overlay_class_name, self._hinstance)
+            ctypes.set_last_error(0)
+            if not _user32.UnregisterClassW(
+                    self._overlay_class_name, self._hinstance):
+                _logger.warning(
+                    "FramelessWindow overlay class unregistration failed "
+                    "(Win32 error %s)",
+                    ctypes.get_last_error(),
+                )
+                return
             self._overlay_class_atom = None
         if self._background_brush:
-            _gdi32.DeleteObject(self._background_brush)
+            ctypes.set_last_error(0)
+            if not _gdi32.DeleteObject(self._background_brush):
+                _logger.warning(
+                    "FramelessWindow brush deletion failed (Win32 error %s)",
+                    ctypes.get_last_error(),
+                )
+                return
             self._background_brush = None

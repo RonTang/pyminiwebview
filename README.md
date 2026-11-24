@@ -170,7 +170,7 @@ WebView(
 
 方法：`close()`、`configure_app_mode(...)`、`notify_parent_position()`、`js_bind(name, fn)`、`js_eval(js)`、`js_init(js)`、`js_return(id, status, result)`、`js_unbind(name)`、`navigate(url)`、`set_html(html)`、`set_title(title)`、`set_size(width, height, hints=0)`、`set_focus()`、`get_native_handle(kind)`、`run(hwnd=0, haccel=0)`、`terminate()`、`dispatch(fn)`。
 
-JS 绑定回调签名为 `fn(request_id, request_json)`；第二个参数是 JSON 数组字符串，回调返回值不会被隐式发送，需显式调用 `js_return`。
+JS 绑定回调签名为 `fn(request_id, request_json)`；第二个参数是 JSON 数组字符串，回调返回值不会被隐式发送，需显式调用 `js_return`。`js_bind` / `js_unbind` 的用户脚本刷新超过 30 秒时抛出 `TimeoutError`；此时原生绑定表已更新，但 JavaScript 刷新未确认，Python 回调所有权仍按实际原生状态保留或释放，可在恢复后重试或解绑。应用退出产生的 `WM_QUIT` 取消不视为超时，仍按原生状态完成收尾。
 
 独立窗口在构造期间保持隐藏，设置完请求的标题、尺寸和背景色后，等待首次 `DOMContentLoaded` 的两个动画帧再显示，避免先出现 640×480 空白窗再跳变。未加载内容时 `run()` 会直接显示；页面事件异常时有 10 秒兜底显示。该行为由项目自有绑定层实现，不修改 vendored 引擎。
 
@@ -278,7 +278,7 @@ ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 import pyminiwebview
 ```
 
-`window.view` 提供完整嵌入式 `WebView`，`window.bridge` 用于注册业务函数；`FramelessWindow.close()` 幂等，并销毁宿主、关闭 WebView、注销窗口类和释放画刷。创建、运行和关闭都应在同一 UI 线程执行。完整的拖动、边缘缩放、后台任务示例见 `examples/05_frameless_app/app.py`。
+`window.view` 提供完整嵌入式 `WebView`，`window.bridge` 用于注册业务函数；`FramelessWindow.close()` 幂等，并销毁宿主、关闭 WebView、注销窗口类和释放画刷。销毁、注销或删除失败会记录 Win32 错误，保留对应资源状态，再次调用 `close()` 可重试。创建、运行和关闭都应在同一 UI 线程执行。完整的拖动、边缘缩放、后台任务示例见 `examples/05_frameless_app/app.py`。
 
 文件对话框在 UI 线程调用；取消返回 `None`，`CommDlgExtendedError` 非零时抛出 `OSError`。保存对话框允许新文件，并提示覆盖已有文件。`initial_file` 最长为 32767 个字符，超长时由 `ctypes` 抛出 `ValueError`。
 
@@ -395,10 +395,11 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - 通过 `CreateWindowExW` 创建宿主窗口并验证 autosize。
 - `configure_app_mode()` 的默认配置与重复调用，以及 `notify_parent_position()`。
 - 幂等 `close()`、上下文管理器、绑定引用环回收、非 UI 线程 GC 后的 UI 原生收尾。
+- 绑定字典插入失败时已有回调排队的延迟释放、bind/unbind 的真实 `WM_QUIT` 取消及 30 秒超时与恢复重试。
 - 排队 dispatch 在 close/析构时取消且释放引用，反复创建销毁和 dispatch/terminate/close 并发压力。
 - 非法参数抛出 Python 异常，64 位 `HWND` 参数解析。
 - 文件对话框 flags、路径缓冲区、取消/错误语义；真实托盘创建、消息回调和清理，以及非法参数、原生失败诊断和清理重试边界。
-- 无边框窗口初始、最小、固定及手动缩放尺寸的逻辑像素到 DPI 物理像素换算。
+- 无边框窗口初始、最小、固定及手动缩放尺寸的逻辑像素到 DPI 物理像素换算，以及宿主销毁、窗口类注销和画刷删除失败后的状态保留与重试。
 - Bridge 的 JSON 成功／错误路径、call_js 参数与函数名校验，以及真实 WebView2 双向调用和引用回收。
 - AsyncBridge 的并发、异常、取消、关闭超时、启动失败回收、executor 关闭边界和引用回收；1000 次并发调用、反复创建销毁，以及真实 WebView2 的 300 次混合结果压力测试。
 - 01、02、03、05、07、08 通过子进程真实启动、执行页面交互并正常清理退出；透明桌宠额外检查 WebView2 背景 alpha、工具窗口、置顶和点击穿透样式。
@@ -422,13 +423,13 @@ Win32 助手另需人工确认：打开对话框能选择已有文件、取消�
 
 ### 0.1.11
 
-- 修复 JavaScript 绑定在解绑、重绑和窗口关闭时的排队回调生命周期；用户脚本刷新被 `WM_QUIT` 中断时按原生绑定表的实际状态管理回调，不再误回滚或悬空；Bridge 先停止接收新回调再解绑，并补充真实 WebView2 压力测试及空闲、周期回调中的 Ctrl+C 回归。
-- 普通、Composition 和用户脚本初始化增加 30 秒有界等待，统一处理 `WM_QUIT` 取消；隔离迟到 COM 回调并关闭取消后迟到的 Composition controller，构造失败时释放半初始化窗口与 COM 资源，避免延迟崩溃和退出码丢失。
-- 重复初始化不再覆盖原实例的 UI 线程或破坏可用状态，参数校验失败后可正常重试；`FramelessWindow` 的初始、最小、固定和手动缩放尺寸统一按当前 DPI 从逻辑像素换算。
+- 修复 JavaScript 绑定在解绑、重绑和窗口关闭时的排队回调生命周期；`js_bind` 字典插入失败也按正常解绑顺序延迟释放，解绑或释放排队失败时保守保留资源，避免潜在 UAF；用户脚本刷新被 `WM_QUIT` 中断时按原生绑定表的实际状态管理回调，不再误回滚或悬空；Bridge 先停止接收新回调再解绑，并补充真实 WebView2 压力测试及空闲、周期回调中的 Ctrl+C 回归。
+- 普通、Composition 和用户脚本初始化增加 30 秒有界等待，统一处理 `WM_QUIT` 取消；绑定脚本刷新超时明确抛出 `TimeoutError`，不再与退出取消一起误报成功；隔离迟到 COM 回调并关闭取消后迟到的 Composition controller，构造失败时释放半初始化窗口与 COM 资源，避免延迟崩溃和退出码丢失。
+- 重复初始化不再覆盖原实例的 UI 线程或破坏可用状态，参数校验失败后可正常重试；`FramelessWindow` 的初始、最小、固定和手动缩放尺寸统一按当前 DPI 从逻辑像素换算，DPI fallback 改用带明确签名的私有 `WinDLL`，窗口销毁、类注销或画刷删除失败时保留状态以供重试并记录 Win32 错误。
 - 初始化异常保留原生错误码、HRESULT 和诊断消息；在 Runtime 前创建用户数据目录，路径不可用时直接报告完整路径与 HRESULT，避免原生错误对话框；托盘校验 tooltip 与回调参数，窗口销毁或窗口类注销失败时保留状态以供重试并记录 Win32 错误。
 - abi3 原生引用增减统一调用稳定 ABI 函数，修复使用 Python 3.13 头文件构建后在 CPython 3.9 上返回 `None`、布尔值及绑定操作时破坏引用计数并在解释器退出时崩溃的问题。
 - 构建版本统一从 `pyproject.toml` 注入扩展，wheel 测试核对包元数据，release 工作流拒绝标签与项目版本不一致的发布；vendor patch 已重新生成并验证可复现当前引擎。
-- 本轮仅进行稳定性修复，不新增公开 Python 功能；完整源码测试和隔离安装后的 wheel 测试均覆盖 226 项用例。
+- 本轮仅进行稳定性修复，不新增公开 Python 功能；完整源码测试和隔离安装后的 wheel 测试均覆盖 234 项用例。
 
 ### 0.1.10
 

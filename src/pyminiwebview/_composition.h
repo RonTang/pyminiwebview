@@ -498,6 +498,7 @@ private:
         if (result <= 0) {
           KillTimer(nullptr, wake_timer);
           if (result == 0) {
+            webview::detail::reset_binding_script_update_status();
             webview::detail::note_initialization_quit(
                 static_cast<int>(message.wParam));
             throw webview::exception{
@@ -511,6 +512,7 @@ private:
         if (message.message == WM_TIMER && message.hwnd == nullptr &&
             message.wParam == wake_timer && GetTickCount64() >= deadline) {
           KillTimer(nullptr, wake_timer);
+          webview::detail::note_binding_script_update_timeout();
           throw webview::exception{
               WEBVIEW_ERROR_CANCELED,
               "Composition WebView2 initialization timed out"};

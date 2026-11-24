@@ -3903,6 +3903,20 @@ static int get_last_initialization_error(const char **message) {
   }
   return static_cast<int>(initialization_error);
 }
+
+static thread_local bool binding_script_update_timed_out = false;
+
+static void reset_binding_script_update_status() {
+  binding_script_update_timed_out = false;
+}
+
+static void note_binding_script_update_timeout() {
+  binding_script_update_timed_out = true;
+}
+
+static bool did_binding_script_update_time_out() {
+  return binding_script_update_timed_out;
+}
 // ==== pyminiwebview patch end ====
 
 class win32_edge_engine : public engine_base {
@@ -4329,6 +4343,11 @@ protected:
         const BOOL wait_result = GetMessageW(&msg, nullptr, 0, 0);
         if (wait_result <= 0) {
           if (wait_result == 0) {
+// ==== pyminiwebview patch begin ====
+// webview_bind/webview_unbind: preserve application cancellation semantics.
+// Dependency: WebView_js_bind/WebView_js_unbind in _module.cpp.
+            reset_binding_script_update_status();
+// ==== pyminiwebview patch end ====
             initialization_quit_code = static_cast<int>(msg.wParam);
             PostQuitMessage(initialization_quit_code);
           }
@@ -4341,6 +4360,11 @@ protected:
         if (msg.message == WM_TIMER && msg.hwnd == nullptr &&
             msg.wParam == wake_timer) {
           if (GetTickCount64() >= deadline) {
+// ==== pyminiwebview patch begin ====
+// webview_bind/webview_unbind: report timeout separately from cancellation.
+// Dependency: WebView_js_bind/WebView_js_unbind in _module.cpp.
+            note_binding_script_update_timeout();
+// ==== pyminiwebview patch end ====
             throw exception{WEBVIEW_ERROR_CANCELED,
                             "WebView2 user script creation timed out"};
           }
@@ -4913,6 +4937,11 @@ WEBVIEW_API webview_error_t webview_bind(webview_t w, const char *name,
   if (!name || !fn) {
     return WEBVIEW_ERROR_INVALID_ARGUMENT;
   }
+// ==== pyminiwebview patch begin ====
+// webview_bind: distinguish script timeout from application cancellation.
+// Dependency: WebView_js_bind in src/pyminiwebview/_module.cpp.
+  reset_binding_script_update_status();
+// ==== pyminiwebview patch end ====
   return api_filter([=] {
     return cast_to_webview(w)->bind(
         name,
@@ -4928,6 +4957,11 @@ WEBVIEW_API webview_error_t webview_unbind(webview_t w, const char *name) {
   if (!name) {
     return WEBVIEW_ERROR_INVALID_ARGUMENT;
   }
+// ==== pyminiwebview patch begin ====
+// webview_unbind: distinguish script timeout from application cancellation.
+// Dependency: WebView_js_unbind in src/pyminiwebview/_module.cpp.
+  reset_binding_script_update_status();
+// ==== pyminiwebview patch end ====
   return api_filter([=] { return cast_to_webview(w)->unbind(name); });
 }
 

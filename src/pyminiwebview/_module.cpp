@@ -398,6 +398,14 @@ static int check_webview_error(webview_error_t error, const char *operation) {
   return 0;
 }
 
+static int set_binding_script_timeout(const char *operation) {
+  PyErr_Format(PyExc_TimeoutError,
+               "%s timed out; the native binding table was updated, but the "
+               "JavaScript binding refresh was not confirmed",
+               operation);
+  return -1;
+}
+
 static int resize_embedded(WebViewObject *self, int width, int height) {
   if (!SetWindowPos(self->widget, nullptr, 0, 0, width, height,
                     SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER)) {
@@ -1486,6 +1494,43 @@ static void binding_call_release(webview_t webview, void *arg) noexcept {
   PyGILState_Release(gil_state);
 }
 
+static webview_error_t queue_binding_call_release(WebViewObject *self,
+                                                   BindingCall *call) {
+  return self->webview == nullptr
+             ? WEBVIEW_ERROR_INVALID_STATE
+             : webview_dispatch(self->webview, binding_call_release, call);
+}
+
+static thread_local bool fail_next_binding_dict_insert = false;
+
+static PyObject *WebView_test_fail_next_binding_dict_insert(WebViewObject *self,
+                                                            PyObject *ignored) {
+  (void)self;
+  (void)ignored;
+  fail_next_binding_dict_insert = true;
+  return new_none_reference();
+}
+
+static void CALLBACK binding_test_quit_timeout(HWND window, UINT message,
+                                               UINT_PTR timer_id,
+                                               DWORD elapsed_ms) {
+  (void)window;
+  (void)message;
+  (void)elapsed_ms;
+  KillTimer(nullptr, timer_id);
+  PostQuitMessage(37);
+}
+
+static PyObject *WebView_test_cancel_binding_script_update(WebViewObject *self,
+                                                           PyObject *ignored) {
+  (void)self;
+  (void)ignored;
+  if (!SetTimer(nullptr, 0, 50, binding_test_quit_timeout)) {
+    return PyErr_SetFromWindowsErr(0);
+  }
+  return new_none_reference();
+}
+
 static void binding_callback(const char *id, const char *request,
                              void *arg) noexcept {
   BindingCall *call = static_cast<BindingCall *>(arg);
@@ -1543,19 +1588,67 @@ static PyObject *WebView_js_bind(WebViewObject *self, PyObject *args) {
   }
   webview_error_t error =
       webview_bind(self->webview, name, binding_callback, call);
+  const bool script_update_timed_out =
+      error == WEBVIEW_ERROR_CANCELED &&
+      webview::detail::did_binding_script_update_time_out();
   // The native binding is inserted before a canceled script refresh returns.
   if (error != WEBVIEW_ERROR_OK && error != WEBVIEW_ERROR_CANCELED) {
     Py_DecRef(capsule);
     set_webview_error("webview_bind", error);
     return nullptr;
   }
+  int dict_result;
+  if (fail_next_binding_dict_insert) {
+    fail_next_binding_dict_insert = false;
+    const webview_error_t queue_error = webview_dispatch(
+        self->webview,
+        [](webview_t, void *arg) noexcept {
+          binding_callback("rollback-test", "[]", arg);
+        },
+        call);
+    if (queue_error == WEBVIEW_ERROR_OK) {
+      PyErr_NoMemory();
+    } else {
+      set_webview_error("webview_dispatch binding rollback test", queue_error);
+    }
+    dict_result = -1;
+  } else {
+    dict_result = PyDict_SetItemString(self->bindings, name, capsule);
+  }
   // Ownership transfers to the release callback after a successful unbind.
-  if (PyDict_SetItemString(self->bindings, name, capsule) < 0) {
-    webview_unbind(self->webview, name);
+  if (dict_result < 0) {
+    PyObject *error_type;
+    PyObject *error_value;
+    PyObject *error_traceback;
+    PyErr_Fetch(&error_type, &error_value, &error_traceback);
+    PyObject *callable = call->callable;
+    Py_IncRef(callable);
+    clear_reference(&call->callable);
+    error = webview_unbind(self->webview, name);
+    if (error != WEBVIEW_ERROR_OK && error != WEBVIEW_ERROR_CANCELED) {
+      call->callable = callable;
+      // The native callback may still own this pointer; abandon the capsule.
+      PyErr_Restore(error_type, error_value, error_traceback);
+      return nullptr;
+    }
+    error = queue_binding_call_release(self, call);
+    if (error != WEBVIEW_ERROR_OK) {
+      Py_DecRef(callable);
+      // Keep the capsule alive because queued native callbacks may retain it.
+      PyErr_Restore(error_type, error_value, error_traceback);
+      return nullptr;
+    }
+    call->release_queued = 1;
     Py_DecRef(capsule);
+    Py_DecRef(callable);
+    PyErr_Restore(error_type, error_value, error_traceback);
     return nullptr;
   }
   Py_DecRef(capsule);
+  if (script_update_timed_out) {
+    set_binding_script_timeout("webview_bind");
+    return nullptr;
+  }
   return new_none_reference();
 }
 
@@ -1589,6 +1682,9 @@ static PyObject *WebView_js_unbind(WebViewObject *self, PyObject *args) {
   Py_IncRef(callable);
   clear_reference(&call->callable);
   webview_error_t error = webview_unbind(self->webview, name);
+  const bool script_update_timed_out =
+      error == WEBVIEW_ERROR_CANCELED &&
+      webview::detail::did_binding_script_update_time_out();
   // The native binding is erased before a canceled script refresh returns.
   if (error != WEBVIEW_ERROR_OK && error != WEBVIEW_ERROR_CANCELED) {
     Py_DecRef(call->callable);
@@ -1597,9 +1693,7 @@ static PyObject *WebView_js_unbind(WebViewObject *self, PyObject *args) {
     set_webview_error("webview_unbind", error);
     return nullptr;
   }
-  error = self->webview == nullptr
-              ? WEBVIEW_ERROR_INVALID_STATE
-              : webview_dispatch(self->webview, binding_call_release, call);
+  error = queue_binding_call_release(self, call);
   if (error != WEBVIEW_ERROR_OK) {
     if (PyDict_GetItemString(self->bindings, name) == capsule &&
         PyDict_DelItemString(self->bindings, name) < 0) {
@@ -1618,6 +1712,10 @@ static PyObject *WebView_js_unbind(WebViewObject *self, PyObject *args) {
   }
   Py_DecRef(capsule);
   Py_DecRef(callable);
+  if (script_update_timed_out) {
+    set_binding_script_timeout("webview_unbind");
+    return nullptr;
+  }
   return new_none_reference();
 }
 
@@ -1804,6 +1902,12 @@ static PyMethodDef WebView_methods[] = {
      "Bind a JavaScript function to a Python callback."},
     {"js_unbind", (PyCFunction)WebView_js_unbind, METH_VARARGS,
      "Remove a JavaScript binding and release its callback."},
+    {"_test_fail_next_binding_dict_insert",
+     (PyCFunction)WebView_test_fail_next_binding_dict_insert, METH_NOARGS,
+     "Inject a queued callback and dictionary insertion failure for tests."},
+    {"_test_cancel_binding_script_update",
+     (PyCFunction)WebView_test_cancel_binding_script_update, METH_NOARGS,
+     "Post WM_QUIT from a native timer during a binding script update."},
     {"js_return", (PyCFunction)WebView_js_return, METH_VARARGS,
      "Resolve a JavaScript binding request."},
     {"js_eval", (PyCFunction)WebView_js_eval, METH_VARARGS,

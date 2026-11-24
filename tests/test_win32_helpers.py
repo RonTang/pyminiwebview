@@ -350,6 +350,137 @@ def test_frameless_wm_close_detaches_bridge_without_unbinding(monkeypatch):
     assert window.bridge is None
 
 
+def make_frameless_close_fixture():
+    window = FramelessWindow.__new__(FramelessWindow)
+    window._resize_direction = None
+    window._resize_overlays = {"t": 789}
+    window.hwnd = 123
+    window.view = SimpleNamespace(close=lambda: None)
+    window.bridge = SimpleNamespace(_detach=lambda: None)
+    window._widget = 456
+    window.ready = True
+    window._class_atom = 11
+    window._class_name = "FramelessClass"
+    window._overlay_class_atom = 22
+    window._overlay_class_name = "OverlayClass"
+    window._background_brush = 33
+    window._hinstance = 44
+    return window
+
+
+def test_frameless_close_destroy_failure_preserves_window_and_allows_retry(
+        monkeypatch, caplog):
+    window = make_frameless_close_fixture()
+    view = window.view
+    bridge = window.bridge
+    destroy_calls = []
+    monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(
+        frameless._user32, "DestroyWindow",
+        lambda hwnd: destroy_calls.append(hwnd) and False,
+    )
+    monkeypatch.setattr(
+        frameless._user32, "UnregisterClassW",
+        lambda *_args: pytest.fail("a live window class must remain registered"),
+    )
+    monkeypatch.setattr(
+        frameless._gdi32, "DeleteObject",
+        lambda *_args: pytest.fail("a live window brush must remain allocated"),
+    )
+
+    with caplog.at_level("WARNING", logger="pyminiwebview_win32.frameless"):
+        window.close()
+    assert destroy_calls == [123]
+    assert window.hwnd == 123
+    assert window.view is view
+    assert window.bridge is bridge
+    assert window._class_atom == 11
+    assert window._overlay_class_atom == 22
+    assert window._background_brush == 33
+    assert "Win32 error 5" in caplog.text
+
+    monkeypatch.setattr(
+        frameless._user32, "DestroyWindow",
+        lambda hwnd: destroy_calls.append(hwnd) or True,
+    )
+    monkeypatch.setattr(frameless._user32, "UnregisterClassW", lambda *_args: True)
+    monkeypatch.setattr(frameless._gdi32, "DeleteObject", lambda _handle: True)
+    window.close()
+    window.close()
+    assert destroy_calls == [123, 123]
+    assert window.hwnd is None
+    assert window.view is None
+    assert window.bridge is None
+    assert window._class_atom is None
+    assert window._overlay_class_atom is None
+    assert window._background_brush is None
+    assert window._resize_overlays == {}
+
+
+@pytest.mark.parametrize("failed_atom", ["_class_atom", "_overlay_class_atom"])
+def test_frameless_close_unregister_failure_preserves_state_for_retry(
+        monkeypatch, caplog, failed_atom):
+    window = make_frameless_close_fixture()
+    window.hwnd = None
+    unregister_calls = []
+    failed_once = False
+
+    def unregister(name, instance):
+        nonlocal failed_once
+        unregister_calls.append((name, instance))
+        if not failed_once and (
+                name == window._class_name and failed_atom == "_class_atom"
+                or name == window._overlay_class_name
+                and failed_atom == "_overlay_class_atom"):
+            failed_once = True
+            return False
+        return True
+
+    monkeypatch.setattr(frameless._user32, "UnregisterClassW", unregister)
+    monkeypatch.setattr(frameless._gdi32, "DeleteObject", lambda _handle: True)
+    monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 1410)
+    with caplog.at_level("WARNING", logger="pyminiwebview_win32.frameless"):
+        window.close()
+        assert getattr(window, failed_atom) is not None
+        assert window._background_brush == 33
+        window.close()
+
+    assert getattr(window, failed_atom) is None
+    assert window._class_atom is None
+    assert window._overlay_class_atom is None
+    assert window._background_brush is None
+    assert "class unregistration failed" in caplog.text
+    assert len(unregister_calls) == 3
+
+
+def test_frameless_close_brush_failure_preserves_handle_for_retry(
+        monkeypatch, caplog):
+    window = make_frameless_close_fixture()
+    window.hwnd = None
+    delete_calls = []
+    monkeypatch.setattr(frameless._user32, "UnregisterClassW", lambda *_args: True)
+    monkeypatch.setattr(
+        frameless._gdi32, "DeleteObject",
+        lambda handle: delete_calls.append(handle) and False,
+    )
+    monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 6)
+    with caplog.at_level("WARNING", logger="pyminiwebview_win32.frameless"):
+        window.close()
+        assert window._class_atom is None
+        assert window._overlay_class_atom is None
+        assert window._background_brush == 33
+        window.close()
+
+    monkeypatch.setattr(
+        frameless._gdi32, "DeleteObject",
+        lambda handle: delete_calls.append(handle) or True,
+    )
+    window.close()
+    assert delete_calls == [33, 33, 33]
+    assert window._background_brush is None
+    assert "brush deletion failed" in caplog.text
+
+
 def test_fixed_frameless_window_disables_resizing_and_maximize():
     window = FramelessWindow.__new__(FramelessWindow)
     window.hwnd = 123
@@ -793,7 +924,7 @@ def test_frameless_dpi_access_denied_uses_system_awareness(monkeypatch):
     )
     monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 5)
     monkeypatch.setattr(
-        frameless.ctypes.windll.shcore, "SetProcessDpiAwareness",
+        frameless._shcore, "SetProcessDpiAwareness",
         lambda level: calls.append(level) or 0,
     )
     frameless._enable_dpi_awareness()
@@ -806,7 +937,7 @@ def test_frameless_dpi_failed_fallback_warns(monkeypatch):
     )
     monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 5)
     monkeypatch.setattr(
-        frameless.ctypes.windll.shcore, "SetProcessDpiAwareness",
+        frameless._shcore, "SetProcessDpiAwareness",
         lambda _level: -1,
     )
     monkeypatch.setattr(frameless, "_is_per_monitor_v2", lambda: False)
@@ -820,7 +951,7 @@ def test_frameless_dpi_does_not_warn_when_already_per_monitor_v2(monkeypatch):
     )
     monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 5)
     monkeypatch.setattr(
-        frameless.ctypes.windll.shcore, "SetProcessDpiAwareness",
+        frameless._shcore, "SetProcessDpiAwareness",
         lambda _level: -1,
     )
     monkeypatch.setattr(frameless, "_is_per_monitor_v2", lambda: True)

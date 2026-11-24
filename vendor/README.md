@@ -35,6 +35,7 @@
    - 配平初始化取得的 Core 与 Settings COM 引用，嵌套初始化取消时保留 `WM_QUIT`。
    - 在调用 Runtime 前创建用户数据目录，避免原生错误对话框；失败时保留完整路径与 HRESULT。
    - 构造全程回滚半初始化资源，隔离迟到的 COM 回调并限制初始化等待时间。
+   - 绑定用户脚本刷新通过 `webview::detail` 内部状态区分 `WM_QUIT` 取消与 30 秒超时，不新增公开 C API。
 2. `webview_run_with_accelerators(hwnd, haccel)`
    - 仅为 Win32 后端增加可选加速键句柄。
    - `webview_run(w)` 恢复上游公开签名，内部以空句柄转调加速键版本；不改变其他平台的公开接口。

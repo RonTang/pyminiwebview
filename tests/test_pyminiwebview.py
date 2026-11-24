@@ -73,6 +73,52 @@ def default_context_menus_enabled(view):
         com_method(core.value, 2, wintypes.ULONG)(core)
 
 
+class PendingScriptCreation:
+    def __init__(self, view):
+        controller = view.get_native_handle(
+            pyminiwebview.NATIVE_HANDLE_KIND_BROWSER_CONTROLLER
+        )
+        self.core = ctypes.c_void_p()
+        get_core = com_method(
+            controller, 25, ctypes.c_long, ctypes.POINTER(ctypes.c_void_p)
+        )
+        assert get_core(controller, ctypes.byref(self.core)) == 0
+        self.vtable_pointer = ctypes.c_void_p.from_address(self.core.value)
+        self.original_vtable = self.vtable_pointer.value
+        self.vtable = (ctypes.c_void_p * 128)()
+        ctypes.memmove(
+            self.vtable, self.original_vtable,
+            ctypes.sizeof(ctypes.c_void_p) * len(self.vtable),
+        )
+        self.calls = []
+        callback_type = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_void_p
+        )
+        self.pending_callback = callback_type(
+            lambda *_args: self.calls.append(_args) or 0
+        )
+        self.vtable[27] = ctypes.cast(self.pending_callback, ctypes.c_void_p).value
+        self.vtable_pointer.value = ctypes.addressof(self.vtable)
+
+    def restore(self):
+        if self.core:
+            self.vtable_pointer.value = self.original_vtable
+            com_method(self.core.value, 2, wintypes.ULONG)(self.core)
+            self.core = None
+
+
+def remove_pending_quit():
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.PeekMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+        wintypes.UINT, wintypes.UINT, wintypes.UINT,
+    ]
+    user32.PeekMessageW.restype = wintypes.BOOL
+    message = wintypes.MSG()
+    if user32.PeekMessageW(ctypes.byref(message), None, 0x0012, 0x0012, 1):
+        assert message.message == 0x0012
+
+
 def window_exists(hwnd):
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.IsWindow.argtypes = [wintypes.HWND]
@@ -540,6 +586,94 @@ def test_bind_navigate_destroy_refcount_is_stable(webview):
     webview.set_html("<p>done</p>")
     assert sys.getrefcount(callback) == baseline
     assert abs(sys.getrefcount(None) - none_baseline) < 100
+
+
+def test_bind_dict_failure_defers_release_until_after_queued_callback(webview):
+    calls = []
+
+    def callback(request_id, request):
+        calls.append((request_id, request))
+
+    baseline = sys.getrefcount(callback)
+    webview._test_fail_next_binding_dict_insert()
+    with pytest.raises(MemoryError):
+        webview.js_bind("rollback", callback)
+    assert sys.getrefcount(callback) == baseline
+
+    watchdog = threading.Timer(0.1, webview.terminate)
+    watchdog.start()
+    try:
+        webview.run()
+    finally:
+        watchdog.cancel()
+    assert calls == []
+    assert sys.getrefcount(callback) == baseline
+
+    webview.js_bind("rollback", callback)
+    assert sys.getrefcount(callback) == baseline + 1
+    webview.js_unbind("rollback")
+    assert sys.getrefcount(callback) == baseline
+
+
+@pytest.mark.parametrize("operation", ["bind", "unbind"])
+def test_binding_script_update_wm_quit_preserves_native_ownership(
+        webview, operation):
+    calls = []
+
+    def callback(request_id, request):
+        calls.append((request_id, request))
+
+    if operation == "unbind":
+        webview.js_bind("cancelled", callback)
+    baseline = sys.getrefcount(callback)
+    pending = PendingScriptCreation(webview)
+    webview._test_cancel_binding_script_update()
+    started = time.monotonic()
+    try:
+        if operation == "bind":
+            webview.js_bind("cancelled", callback)
+            assert sys.getrefcount(callback) == baseline + 1
+        else:
+            webview.js_unbind("cancelled")
+            assert sys.getrefcount(callback) == baseline - 1
+    finally:
+        pending.restore()
+    assert pending.calls
+    assert time.monotonic() - started >= 0.04
+    remove_pending_quit()
+
+    if operation == "bind":
+        webview.js_unbind("cancelled")
+        assert sys.getrefcount(callback) == baseline
+    else:
+        webview.js_bind("cancelled", callback)
+        assert sys.getrefcount(callback) == baseline
+        webview.js_unbind("cancelled")
+        assert sys.getrefcount(callback) == baseline - 1
+    assert calls == []
+
+
+def test_binding_script_update_timeout_is_not_reported_as_success(webview):
+    def callback(request_id, request):
+        pass
+
+    baseline = sys.getrefcount(callback)
+    pending = PendingScriptCreation(webview)
+    try:
+        with pytest.raises(TimeoutError, match="native binding table was updated"):
+            webview.js_bind("timed_out", callback)
+        assert sys.getrefcount(callback) == baseline + 1
+
+        with pytest.raises(TimeoutError, match="native binding table was updated"):
+            webview.js_unbind("timed_out")
+        assert sys.getrefcount(callback) == baseline
+    finally:
+        pending.restore()
+
+    webview.js_bind("timed_out", callback)
+    assert sys.getrefcount(callback) == baseline + 1
+    webview.js_unbind("timed_out")
+    assert sys.getrefcount(callback) == baseline
 
 
 def test_javascript_callback_and_return(webview):
