@@ -23,7 +23,7 @@
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
 
-当前版本为 `0.1.11`，发布产物已在本机完成隔离安装测试。正式 PyPI 已发布，可安装最新可用版本：
+当前版本为 `0.1.12`，发布产物已在本机完成隔离安装测试。正式 PyPI 已发布，可安装最新可用版本：
 
 ```bash
 python -m pip install pyminiwebview
@@ -32,7 +32,7 @@ python -m pip install pyminiwebview
 如需验证 TestPyPI 发布，可使用：
 
 ```bash
-python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.11
+python -m pip install --index-url https://test.pypi.org/simple/ --no-deps pyminiwebview==0.1.12
 ```
 
 TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可以从 GitHub Actions 对应运行页面的 Artifacts 区域下载 `pyminiwebview-wheel`，解压后按下文安装 wheel；Release 发布后还可从 Releases 页面获取。
@@ -40,7 +40,7 @@ TestPyPI 用于发布流程验证，不作为长期稳定分发渠道。也可�
 安装下载或本地构建的 wheel 时，在 wheel 所在目录执行（版本号以实际文件为准）：
 
 ```bash
-python -m pip install pyminiwebview-0.1.11-cp39-abi3-win_amd64.whl
+python -m pip install pyminiwebview-0.1.12-cp39-abi3-win_amd64.whl
 ```
 
 也可以直接分发 pyd：将文件命名为 `pyminiwebview.pyd`，放到应用脚本同目录或 `sys.path` 包含的其他目录，然后执行 `import pyminiwebview`。pyd 是由 Python 加载的原生扩展，不是可双击运行的程序。当前产物仅支持 64 位 Windows；abi3 wheel 可用于 64 位 CPython 3.9+，目标机器仍需安装 WebView2 Runtime。
@@ -421,11 +421,15 @@ Win32 助手另需人工确认：打开对话框能选择已有文件、取消�
 
 ## CHANGELOG
 
+### 0.1.12
+
+- 修正 `FramelessWindow` 背景画刷所有权：窗口类注册成功后由 `UnregisterClassW` 自动删除 class background brush，不再重复调用 `DeleteObject`，消除退出时 `brush deletion failed (Win32 error 0)` 警告；注册失败时仍由应用清理自有画刷，失败会保留句柄以供重试。
+
 ### 0.1.11
 
 - 修复 JavaScript 绑定在解绑、重绑和窗口关闭时的排队回调生命周期；`js_bind` 字典插入失败也按正常解绑顺序延迟释放，解绑或释放排队失败时保守保留资源，避免潜在 UAF；用户脚本刷新被 `WM_QUIT` 中断时按原生绑定表的实际状态管理回调，不再误回滚或悬空；Bridge 先停止接收新回调再解绑，并补充真实 WebView2 压力测试及空闲、周期回调中的 Ctrl+C 回归。
 - 普通、Composition 和用户脚本初始化增加 30 秒有界等待，统一处理 `WM_QUIT` 取消；绑定脚本刷新超时明确抛出 `TimeoutError`，不再与退出取消一起误报成功；隔离迟到 COM 回调并关闭取消后迟到的 Composition controller，构造失败时释放半初始化窗口与 COM 资源，避免延迟崩溃和退出码丢失。
-- 重复初始化不再覆盖原实例的 UI 线程或破坏可用状态，参数校验失败后可正常重试；`FramelessWindow` 的初始、最小、固定和手动缩放尺寸统一按当前 DPI 从逻辑像素换算，DPI fallback 改用带明确签名的私有 `WinDLL`，窗口销毁或类注销失败时保留状态以供重试并记录 Win32 错误；class background brush 在注册成功后交由 `UnregisterClassW` 删除，避免退出时重复 `DeleteObject`，仅注册失败的自有画刷由应用清理并支持重试。
+- 重复初始化不再覆盖原实例的 UI 线程或破坏可用状态，参数校验失败后可正常重试；`FramelessWindow` 的初始、最小、固定和手动缩放尺寸统一按当前 DPI 从逻辑像素换算，DPI fallback 改用带明确签名的私有 `WinDLL`，窗口销毁、类注销或画刷删除失败时保留状态以供重试并记录 Win32 错误。
 - 初始化异常保留原生错误码、HRESULT 和诊断消息；在 Runtime 前创建用户数据目录，路径不可用时直接报告完整路径与 HRESULT，避免原生错误对话框；托盘校验 tooltip 与回调参数，窗口销毁或窗口类注销失败时保留状态以供重试并记录 Win32 错误。
 - abi3 原生引用增减统一调用稳定 ABI 函数，修复使用 Python 3.13 头文件构建后在 CPython 3.9 上返回 `None`、布尔值及绑定操作时破坏引用计数并在解释器退出时崩溃的问题。
 - 构建版本统一从 `pyproject.toml` 注入扩展，wheel 测试核对包元数据，release 工作流拒绝标签与项目版本不一致的发布；vendor patch 已重新生成并验证可复现当前引擎。
