@@ -373,18 +373,19 @@ def test_close_rejects_non_ui_thread_and_releases_bridge_reference():
     bridge_ref = weakref.ref(bridge)
     errors = []
 
-    def close_from_worker():
+    def close_from_worker(target):
         try:
-            bridge.close()
+            target.close()
         except RuntimeError as error:
             errors.append(str(error))
 
-    thread = threading.Thread(target=close_from_worker)
+    thread = threading.Thread(target=close_from_worker, args=(bridge,))
     thread.start()
     thread.join()
     assert errors == ["AsyncBridge.close() must run on the UI thread"]
     bridge.close()
     del bridge
+    del thread
     gc.collect()
     assert bridge_ref() is None
 

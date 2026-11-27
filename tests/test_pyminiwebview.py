@@ -676,10 +676,13 @@ def test_binding_script_update_timeout_is_not_reported_as_success(webview):
     assert sys.getrefcount(callback) == baseline
 
 
-def test_javascript_callback_and_return(webview):
+def test_javascript_callback_and_return_uses_ui_thread(webview):
     received = []
+    callback_threads = []
+    ui_thread = threading.get_ident()
 
     def callback(request_id, request):
+        callback_threads.append(threading.get_ident())
         received.append(json.loads(request))
         webview.js_return(request_id, 0, '"python result"')
         webview.terminate()
@@ -693,6 +696,7 @@ def test_javascript_callback_and_return(webview):
     finally:
         watchdog.cancel()
     assert received == [[42, "ok"]]
+    assert callback_threads == [ui_thread]
 
 
 def test_run_releases_gil_and_dispatch_uses_ui_thread(webview):

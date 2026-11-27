@@ -16,6 +16,29 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify vendor patch reproduces vendored engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$PWD"
+          upstream="$(mktemp -d)"
+          replica="$(mktemp -d)"
+          expected="$(mktemp -d)"
+          trap 'rm -rf "$upstream" "$replica" "$expected"' EXIT
+          git init -q "$upstream"
+          git -C "$upstream" config core.autocrlf false
+          git -C "$upstream" remote add origin https://github.com/webview/webview.git
+          git -C "$upstream" fetch -q --depth=1 origin 3ab4b5d722438fc8a13e6ca830c5e2372d19a01d
+          git -C "$upstream" checkout -q FETCH_HEAD
+          mkdir -p "$replica/vendor/webview"
+          cp "$upstream/core/include/webview.h" "$replica/vendor/webview.h"
+          cp "$upstream/core/include/webview/webview.h" "$replica/vendor/webview/webview.h"
+          git -c core.autocrlf=false -C "$replica" apply --check "$workspace/patches/0001-pyminiwebview-engine-extensions.patch"
+          git -c core.autocrlf=false -C "$replica" apply "$workspace/patches/0001-pyminiwebview-engine-extensions.patch"
+          git show HEAD:vendor/webview.h > "$expected/webview.h"
+          git show HEAD:vendor/webview/webview.h > "$expected/webview-engine.h"
+          cmp "$replica/vendor/webview.h" "$expected/webview.h"
+          cmp "$replica/vendor/webview/webview.h" "$expected/webview-engine.h"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.9"

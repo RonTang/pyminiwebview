@@ -569,7 +569,7 @@ def test_real_webview_close_or_gc_releases_bridge_callback(
     bridge_ref = weakref.ref(bridge)
 
     @bridge.expose
-    def callback():
+    def callback(view=view):
         return view
 
     callback_ref = weakref.ref(callback)

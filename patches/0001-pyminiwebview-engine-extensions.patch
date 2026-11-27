@@ -899,7 +899,7 @@
    return api_filter([=] {
      return cast_to_webview(w)->bind(
          name,
-@@ -4535,6 +4957,11 @@
+@@ -4535,5 +4957,10 @@
    if (!name) {
      return WEBVIEW_ERROR_INVALID_ARGUMENT;
    }

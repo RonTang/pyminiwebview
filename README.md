@@ -19,6 +19,8 @@
 
 除 `terminate`、`js_return` 和 `dispatch` 外，其余方法应在创建实例的 UI 线程调用。`dispatch(fn)` 接受无参数 callable，在 UI 线程执行；普通异常通过 `PyErr_PrintEx(0)` 输出，`KeyboardInterrupt` 会终止消息循环，不会跨原生消息边界重新抛出。
 
+`run()` 的原生消息循环通过 `Py_BEGIN_ALLOW_THREADS` 释放 GIL，后台 Python 线程可以运行；进入 `dispatch` 或 JS 绑定回调时通过 `PyGILState_Ensure` 重新获取 GIL。`dispatch` 与 JS→Python 绑定回调均在创建 WebView 的 UI 线程执行，不会直接在 COM 回调线程执行 Python callable。
+
 ## 安装与运行
 
 系统需安装 Microsoft Edge WebView2 Runtime。Windows 11 通常已预装。
@@ -82,6 +84,8 @@ with pyminiwebview.WebView(app_name="binding-demo") as view:
 ```
 
 `Bridge` 只注册同步函数，自动处理位置参数 JSON 和返回值。除装饰器外，也可直接注册已有 callable：`bridge.expose(lambda: manager.open_excel(view), name="open_excel")`；`AsyncBridge` 同样支持 `bridge.expose(coroutine_function, name="load_data")`。普通 Python 异常以包含异常类型和消息的 object 拒绝 JS Promise，并在 Python 日志中记录 traceback；NaN、Infinity 和不可序列化结果会被拒绝。`Bridge.close()` 幂等，会解绑全部函数；必须在 `view.close()` 前调用，嵌套上下文管理器会按正确顺序清理。
+
+同步 Bridge 的业务函数也在 UI 线程执行。函数自身长时间阻塞会冻结 UI，对应 JS Promise 会一直保持 pending；耗时工作应放入后台线程或使用 `AsyncBridge`。`call_js` 为 fire-and-forget，不等待 JavaScript 返回，因此同步 Python 处理函数调用它不会形成“Python 同步等 JS、JS 又同步等同一个 Python”的死锁闭环。
 
 需要 `async def` 时使用独立的 `AsyncBridge`。每个实例复用一个后台 asyncio 事件循环，所有调用在该循环上并发执行，不为每次请求创建线程：
 
@@ -390,7 +394,7 @@ pytest 在真实 WebView2 Runtime 中覆盖：
 - 初始化取消在子进程中通过 `WH_GETMESSAGE` 进入真实原生等待，保留 `WM_QUIT` 退出码并泵送迟到回调，普通与 Composition 各覆盖 6 轮；另有 8 轮真实 Composition 创建、用户脚本注入与关闭压力测试。
 - `webview_widget` 和 `webview_message` 创建失败时销毁已创建 HWND 并允许同对象重试；用户数据目录父路径为普通文件时快速返回完整路径和 HRESULT，不触发 Runtime 错误对话框。
 - 真实 WebView2 排队绑定在解绑、重绑和关闭时安全释放，Ctrl+C 能终止空闲或周期 Bridge 回调中的消息循环；重复初始化保留原实例与 UI 线程。
-- 实际 JS→Python 回调与 `js_return`。
+- 实际 JS→Python 回调与 `js_return`，并断言绑定回调在创建 WebView 的 UI 线程执行。
 - `run()` 期间 `threading.Timer` 能执行，且 `dispatch` 在 UI 线程运行。
 - 通过 `CreateWindowExW` 创建宿主窗口并验证 autosize。
 - `configure_app_mode()` 的默认配置与重复调用，以及 `notify_parent_position()`。
