@@ -20,7 +20,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          workspace="$PWD"
           upstream="$(mktemp -d)"
           replica="$(mktemp -d)"
           expected="$(mktemp -d)"
@@ -33,8 +32,9 @@ jobs:
           mkdir -p "$replica/vendor/webview"
           cp "$upstream/core/include/webview.h" "$replica/vendor/webview.h"
           cp "$upstream/core/include/webview/webview.h" "$replica/vendor/webview/webview.h"
-          git -c core.autocrlf=false -C "$replica" apply --check "$workspace/patches/0001-pyminiwebview-engine-extensions.patch"
-          git -c core.autocrlf=false -C "$replica" apply "$workspace/patches/0001-pyminiwebview-engine-extensions.patch"
+          git show HEAD:patches/0001-pyminiwebview-engine-extensions.patch > "$expected/engine.patch"
+          git -c core.autocrlf=false -C "$replica" apply --check "$expected/engine.patch"
+          git -c core.autocrlf=false -C "$replica" apply "$expected/engine.patch"
           git show HEAD:vendor/webview.h > "$expected/webview.h"
           git show HEAD:vendor/webview/webview.h > "$expected/webview-engine.h"
           cmp "$replica/vendor/webview.h" "$expected/webview.h"
