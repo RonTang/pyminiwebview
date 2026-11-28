@@ -927,12 +927,39 @@ def test_frameless_legacy_frame_aliases(monkeypatch, alias, canonical):
     assert window._frame == canonical
 
 
+def test_frameless_dpi_access_denied_uses_thread_per_monitor_v2(monkeypatch):
+    calls = []
+
+    def set_thread_context(context):
+        calls.append(context.value)
+        return 123
+
+    monkeypatch.setattr(
+        frameless._user32, "SetProcessDpiAwarenessContext", lambda _context: False
+    )
+    monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(
+        frameless._user32, "SetThreadDpiAwarenessContext", set_thread_context
+    )
+    monkeypatch.setattr(
+        frameless._shcore, "SetProcessDpiAwareness",
+        lambda _level: pytest.fail("thread awareness must precede SHCore fallback"),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        frameless._enable_dpi_awareness()
+    assert calls == [frameless.ctypes.c_void_p(-4).value]
+
+
 def test_frameless_dpi_access_denied_uses_system_awareness(monkeypatch):
     calls = []
     monkeypatch.setattr(
         frameless._user32, "SetProcessDpiAwarenessContext", lambda _context: False
     )
     monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(
+        frameless._user32, "SetThreadDpiAwarenessContext", lambda _context: 0
+    )
     monkeypatch.setattr(
         frameless._shcore, "SetProcessDpiAwareness",
         lambda level: calls.append(level) or 0,
@@ -947,6 +974,9 @@ def test_frameless_dpi_failed_fallback_warns(monkeypatch):
     )
     monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 5)
     monkeypatch.setattr(
+        frameless._user32, "SetThreadDpiAwarenessContext", lambda _context: 0
+    )
+    monkeypatch.setattr(
         frameless._shcore, "SetProcessDpiAwareness",
         lambda _level: -1,
     )
@@ -960,6 +990,9 @@ def test_frameless_dpi_does_not_warn_when_already_per_monitor_v2(monkeypatch):
         frameless._user32, "SetProcessDpiAwarenessContext", lambda _context: False
     )
     monkeypatch.setattr(frameless.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(
+        frameless._user32, "SetThreadDpiAwarenessContext", lambda _context: 0
+    )
     monkeypatch.setattr(
         frameless._shcore, "SetProcessDpiAwareness",
         lambda _level: -1,

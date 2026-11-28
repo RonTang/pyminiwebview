@@ -298,6 +298,8 @@ _user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
 _user32.UnregisterClassW.restype = wintypes.BOOL
 _user32.SetProcessDpiAwarenessContext.argtypes = [wintypes.HANDLE]
 _user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
+_user32.SetThreadDpiAwarenessContext.argtypes = [wintypes.HANDLE]
+_user32.SetThreadDpiAwarenessContext.restype = wintypes.HANDLE
 _user32.GetThreadDpiAwarenessContext.argtypes = []
 _user32.GetThreadDpiAwarenessContext.restype = wintypes.HANDLE
 _user32.AreDpiAwarenessContextsEqual.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
@@ -356,6 +358,11 @@ def _enable_dpi_awareness():
     error = ctypes.get_last_error()
     if error != _ERROR_ACCESS_DENIED:
         raise ctypes.WinError(error)
+    try:
+        if _user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except (AttributeError, OSError):
+        pass
     try:
         result = (
             _shcore.SetProcessDpiAwareness(2) if _shcore is not None else -1
